@@ -13,6 +13,7 @@ use crate::{
         new_voice_call_request, new_voice_call_response, start_audio_thread, MediaData, MediaSender,
     },
     common::{get_default_sound_input, set_sound_input},
+    server::scenario::CUR_BOT,
     video_service,
 };
 #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -110,23 +111,6 @@ pub struct ConnInner {
     tx_video: Option<Sender>,
 }
 
-pub(super) enum MessageInput {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    Mouse((MouseEvent, i32)),
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    Key((KeyEvent, bool)),
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    Pointer((PointerDeviceEvent, i32)),
-    BlockOn,
-    BlockOff,
-    #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    BlockOnPlugin(String),
-    #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    BlockOffPlugin(String),
-}
-
 #[derive(Clone, Debug)]
 struct Session {
     name: String,
@@ -143,12 +127,15 @@ struct StartCmIpcPara {
     tx_cm_stream_ready: mpsc::Sender<()>,
 }
 
-pub struct Connection {
+pub struct BotConnection {
+    processing_request: ProcessingRequest,
+
+    tx_to_local_stream: mpsc::UnboundedSender<Message>,
     inner: ConnInner,
-    stream: super::Stream,
+    // stream: super::Stream,
     server: super::ServerPtrWeak,
     hash: Hash,
-    read_jobs: Vec<fs::TransferJob>,
+    // read_jobs: Vec<fs::TransferJob>,
     timer: Interval,
     file_timer: Interval,
     file_transfer: Option<(String, bool)>,
@@ -156,6 +143,7 @@ pub struct Connection {
     port_forward_address: String,
     tx_to_cm: mpsc::UnboundedSender<ipc::Data>,
     authorized: bool,
+    processing: bool,
     keyboard: bool,
     clipboard: bool,
     audio: bool,
@@ -247,66 +235,30 @@ const SEND_TIMEOUT_VIDEO: u64 = 12_000;
 const SEND_TIMEOUT_OTHER: u64 = SEND_TIMEOUT_VIDEO * 10;
 const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub(super) struct MpscChannels {
-    pub from_cm: (
-        mpsc::UnboundedSender<ipc::Data>,
-        mpsc::UnboundedReceiver<ipc::Data>,
-    ),
-    pub to_cm: (
-        mpsc::UnboundedSender<ipc::Data>,
-        mpsc::UnboundedReceiver<ipc::Data>,
-    ),
-    pub tx_rx: (
-        mpsc::UnboundedSender<(Instant, Arc<Message>)>,
-        mpsc::UnboundedReceiver<(Instant, Arc<Message>)>,
-    ),
-    pub tx_rx_video: (
-        mpsc::UnboundedSender<(Instant, Arc<Message>)>,
-        mpsc::UnboundedReceiver<(Instant, Arc<Message>)>,
-    ),
-    pub tx_rx_input: (
-        std_mpsc::Sender<MessageInput>,
-        std_mpsc::Receiver<MessageInput>,
-    ),
-}
-
-pub enum StreamType {
-    Stream {
-        addr: SocketAddr,
-        stream: super::Stream,
-    },
-    LocalStream {
-        handler: scenario::HandlerPtrWeak,
-    },
-}
-
-pub(super) async fn start_stream(stream_type: StreamType, id: i32, server: super::ServerPtrWeak) {
-    let mpsc_channels = MpscChannels {
-        from_cm: mpsc::unbounded_channel::<ipc::Data>(),
-        to_cm: mpsc::unbounded_channel::<ipc::Data>(),
-        tx_rx: mpsc::unbounded_channel::<(Instant, Arc<Message>)>(),
-        tx_rx_video: mpsc::unbounded_channel::<(Instant, Arc<Message>)>(),
-        tx_rx_input: std_mpsc::channel(),
-    };
-
-    match stream_type {
-        StreamType::Stream { addr, stream } => {
-            Connection::start(addr, stream, id, server, mpsc_channels).await
-        }
-        StreamType::LocalStream { handler } => {
-            // bot_connection::BotConnection::start(id, server, mpsc_channels, handler).await
-        }
-    }
-}
-
-impl Connection {
+impl BotConnection {
     pub async fn start(
-        addr: SocketAddr,
-        stream: super::Stream,
         id: i32,
+        handler: scenario::HandlerPtrWeak,
         server: super::ServerPtrWeak,
         mpsc_channels: MpscChannels,
     ) {
+        log::info!("create_local_connection");
+        let (tx_to_local_stream, mut rx_to_local_stream) = mpsc::unbounded_channel::<Message>();
+        let (tx_from_local_stream, mut rx_from_local_stream) = mpsc::unbounded_channel::<Message>();
+
+        // TODO: send to reconnect
+        if let Some(handler) = handler.upgrade() {
+            handler.write().unwrap().set_id(id.to_string());
+            #[cfg(not(any(feature = "flutter", feature = "cli")))]
+            {
+                *CUR_BOT.lock().unwrap() = Some(handler.write().unwrap().inner());
+            }
+            handler
+                .read()
+                .unwrap()
+                .reconnect(rx_to_local_stream, tx_from_local_stream);
+        }
+
         let _raii_id = raii::ConnectionID::new(id);
         let hash = Hash {
             salt: Config::get_salt(),
@@ -334,16 +286,17 @@ impl Connection {
 
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let tx_cloned = tx.clone();
+
         let mut conn = Self {
+            processing_request: Default::default(),
+            tx_to_local_stream: tx_to_local_stream,
             inner: ConnInner {
                 id,
                 tx: Some(tx),
                 tx_video: Some(tx_video),
             },
-            stream,
             server,
             hash,
-            read_jobs: Vec::new(),
             timer: time::interval(SEC30),
             file_timer: time::interval(SEC30),
             file_transfer: None,
@@ -396,407 +349,11 @@ impl Connection {
                 rx_desktop_ready,
                 tx_cm_stream_ready,
             }),
+            processing: false,
         };
-        let addr = hbb_common::try_into_v4(addr);
-        if !conn.on_open(addr).await {
-            conn.closed = true;
-            // sleep to ensure msg got received.
-            sleep(1.).await;
-            return;
-        }
+
         #[cfg(target_os = "android")]
         start_channel(rx_to_cm, tx_from_cm);
-        if !conn.keyboard {
-            conn.send_permission(Permission::Keyboard, false).await;
-        }
-        if !conn.clipboard {
-            conn.send_permission(Permission::Clipboard, false).await;
-        }
-        if !conn.audio {
-            conn.send_permission(Permission::Audio, false).await;
-        }
-        if !conn.file {
-            conn.send_permission(Permission::File, false).await;
-        }
-        if !conn.restart {
-            conn.send_permission(Permission::Restart, false).await;
-        }
-        if !conn.recording {
-            conn.send_permission(Permission::Recording, false).await;
-        }
-        let mut test_delay_timer =
-            time::interval_at(Instant::now() + TEST_DELAY_TIMEOUT, TEST_DELAY_TIMEOUT);
-        let mut last_recv_time = Instant::now();
-
-        conn.stream.set_send_timeout(
-            if conn.file_transfer.is_some() || conn.port_forward_socket.is_some() {
-                SEND_TIMEOUT_OTHER
-            } else {
-                SEND_TIMEOUT_VIDEO
-            },
-        );
-
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        std::thread::spawn(move || Self::handle_input(_rx_input, tx_cloned));
-        let mut second_timer = time::interval(Duration::from_secs(1));
-
-        loop {
-            tokio::select! {
-                // biased; // video has higher priority // causing test_delay_timer failed while transferring big file
-
-                Some(data) = rx_from_cm.recv() => {
-                    match data {
-                        ipc::Data::Authorize => {
-                            conn.send_logon_response().await;
-                            if conn.port_forward_socket.is_some() {
-                                break;
-                            }
-                        }
-                        ipc::Data::Close => {
-                            conn.chat_unanswered = false; // seen
-                            conn.send_close_reason_no_retry("").await;
-                            conn.on_close("connection manager", true).await;
-                            break;
-                        }
-                        ipc::Data::ChatMessage{text} => {
-                            let mut misc = Misc::new();
-                            misc.set_chat_message(ChatMessage {
-                                text,
-                                ..Default::default()
-                            });
-                            let mut msg_out = Message::new();
-                            msg_out.set_misc(misc);
-                            conn.send(msg_out).await;
-                            conn.chat_unanswered = false;
-                        }
-                        ipc::Data::SwitchPermission{name, enabled} => {
-                            log::info!("Change permission {} -> {}", name, enabled);
-                            if &name == "keyboard" {
-                                conn.keyboard = enabled;
-                                conn.send_permission(Permission::Keyboard, enabled).await;
-                                if let Some(s) = conn.server.upgrade() {
-                                    s.write().unwrap().subscribe(
-                                        NAME_CURSOR,
-                                        conn.inner.clone(), enabled || conn.show_remote_cursor);
-                                }
-                            } else if &name == "clipboard" {
-                                conn.clipboard = enabled;
-                                conn.send_permission(Permission::Clipboard, enabled).await;
-                                if let Some(s) = conn.server.upgrade() {
-                                    s.write().unwrap().subscribe(
-                                        super::clipboard_service::NAME,
-                                        conn.inner.clone(), conn.clipboard_enabled() && conn.peer_keyboard_enabled());
-                                }
-                            } else if &name == "audio" {
-                                conn.audio = enabled;
-                                conn.send_permission(Permission::Audio, enabled).await;
-                                if let Some(s) = conn.server.upgrade() {
-                                    s.write().unwrap().subscribe(
-                                        super::audio_service::NAME,
-                                        conn.inner.clone(), conn.audio_enabled());
-                                }
-                            } else if &name == "file" {
-                                conn.file = enabled;
-                                conn.send_permission(Permission::File, enabled).await;
-                            } else if &name == "restart" {
-                                conn.restart = enabled;
-                                conn.send_permission(Permission::Restart, enabled).await;
-                            } else if &name == "recording" {
-                                conn.recording = enabled;
-                                conn.send_permission(Permission::Recording, enabled).await;
-                            }
-                        }
-                        ipc::Data::RawMessage(bytes) => {
-                            allow_err!(conn.stream.send_raw(bytes).await);
-                        }
-                        #[cfg(windows)]
-                        ipc::Data::ClipboardFile(clip) => {
-                            allow_err!(conn.stream.send(&clip_2_msg(clip)).await);
-                        }
-                        ipc::Data::PrivacyModeState((_, state)) => {
-                            let msg_out = match state {
-                                ipc::PrivacyModeState::OffSucceeded => {
-                                    video_service::set_privacy_mode_conn_id(0);
-                                    crate::common::make_privacy_mode_msg(
-                                        back_notification::PrivacyModeState::PrvOffSucceeded,
-                                    )
-                                }
-                                ipc::PrivacyModeState::OffFailed => {
-                                    crate::common::make_privacy_mode_msg(
-                                        back_notification::PrivacyModeState::PrvOffFailed,
-                                    )
-                                }
-                                ipc::PrivacyModeState::OffByPeer => {
-                                    video_service::set_privacy_mode_conn_id(0);
-                                    crate::common::make_privacy_mode_msg(
-                                        back_notification::PrivacyModeState::PrvOffByPeer,
-                                    )
-                                }
-                                ipc::PrivacyModeState::OffUnknown => {
-                                    video_service::set_privacy_mode_conn_id(0);
-                                     crate::common::make_privacy_mode_msg(
-                                        back_notification::PrivacyModeState::PrvOffUnknown,
-                                    )
-                                }
-                            };
-                            conn.send(msg_out).await;
-                        }
-                        #[cfg(windows)]
-                        ipc::Data::DataPortableService(ipc::DataPortableService::RequestStart) => {
-                            if let Err(e) = portable_client::start_portable_service(portable_client::StartPara::Direct) {
-                                log::error!("Failed to start portable service from cm:{:?}", e);
-                            }
-                        }
-                        ipc::Data::SwitchSidesBack => {
-                            let mut misc = Misc::new();
-                            misc.set_switch_back(SwitchBack::default());
-                            let mut msg = Message::new();
-                            msg.set_misc(misc);
-                            conn.send(msg).await;
-                        }
-                        ipc::Data::VoiceCallResponse(accepted) => {
-                            conn.handle_voice_call(accepted).await;
-                        }
-                        ipc::Data::CloseVoiceCall(_reason) => {
-                            log::debug!("Close the voice call from the ipc.");
-                            conn.close_voice_call().await;
-                            // Notify the peer that we closed the voice call.
-                            let msg = new_voice_call_request(false);
-                            conn.send(msg).await;
-                        }
-                        _ => {}
-                    }
-                },
-                res = conn.stream.next() => {
-                    if let Some(res) = res {
-                        match res {
-                            Err(err) => {
-                                conn.on_close(&err.to_string(), true).await;
-                                break;
-                            },
-                            Ok(bytes) => {
-                                last_recv_time = Instant::now();
-                                *conn.last_recv_time.lock().unwrap() = Instant::now();
-                                if let Ok(msg_in) = Message::parse_from_bytes(&bytes) {
-                                    if !conn.on_message(msg_in).await {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        conn.on_close("Reset by the peer", true).await;
-                        break;
-                    }
-                },
-                _ = conn.file_timer.tick() => {
-                    if !conn.read_jobs.is_empty() {
-                        if let Err(err) = fs::handle_read_jobs(&mut conn.read_jobs, &mut conn.stream).await {
-                            conn.on_close(&err.to_string(), false).await;
-                            break;
-                        }
-                    } else {
-                        conn.file_timer = time::interval_at(Instant::now() + SEC30, SEC30);
-                    }
-                }
-                Ok(conns) = hbbs_rx.recv() => {
-                    if conns.contains(&id) {
-                        conn.send_close_reason_no_retry("Closed manually by web console").await;
-                        conn.on_close("web console", true).await;
-                        break;
-                    }
-                }
-                Some((instant, value)) = rx_video.recv() => {
-                    if !conn.video_ack_required {
-                        video_service::notify_video_frame_fetched(id, Some(instant.into()));
-                    }
-                    if let Err(err) = conn.stream.send(&value as &Message).await {
-                        conn.on_close(&err.to_string(), false).await;
-                        break;
-                    }
-                },
-                Some((instant, value)) = rx.recv() => {
-                    let latency = instant.elapsed().as_millis() as i64;
-                    let msg: &Message = &value;
-
-                    if latency > 1000 {
-                        match &msg.union {
-                            Some(message::Union::AudioFrame(_)) => {
-                                // log::info!("audio frame latency {}", instant.elapsed().as_secs_f32());
-                                continue;
-                            }
-                            _ => {}
-                        }
-                    }
-                    match &msg.union {
-                        Some(message::Union::Misc(m)) => {
-                            match &m.union {
-                                Some(misc::Union::StopService(_)) => {
-                                    conn.send_close_reason_no_retry("").await;
-                                    conn.on_close("stop service", false).await;
-                                    break;
-                                }
-                                _ => {},
-                            }
-                        }
-                        _ => {}
-                    }
-                    if let Err(err) = conn.stream.send(msg).await {
-                        conn.on_close(&err.to_string(), false).await;
-                        break;
-                    }
-                },
-                _ = second_timer.tick() => {
-                    #[cfg(windows)]
-                    conn.portable_check();
-                }
-                _ = test_delay_timer.tick() => {
-                    if last_recv_time.elapsed() >= SEC30 {
-                        conn.on_close("Timeout", true).await;
-                        break;
-                    }
-                    let time = get_time();
-                    let mut qos = video_service::VIDEO_QOS.lock().unwrap();
-                    if time > 0 && conn.last_test_delay == 0 {
-                        conn.last_test_delay = time;
-                        let mut msg_out = Message::new();
-                        msg_out.set_test_delay(TestDelay{
-                            time,
-                            last_delay:conn.network_delay.unwrap_or_default(),
-                            target_bitrate: qos.bitrate(),
-                            ..Default::default()
-                        });
-                        conn.inner.send(msg_out.into());
-                    }
-                    qos.user_delay_response_elapsed(conn.inner.id(), conn.delay_response_instant.elapsed().as_millis());
-                }
-            }
-        }
-
-        let video_privacy_conn_id = video_service::get_privacy_mode_conn_id();
-        if video_privacy_conn_id == id {
-            video_service::set_privacy_mode_conn_id(0);
-            let _ = privacy_mode::turn_off_privacy(id);
-        } else if video_privacy_conn_id == 0 {
-            let _ = privacy_mode::turn_off_privacy(0);
-        }
-        #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        crate::plugin::handle_listen_event(
-            crate::plugin::EVENT_ON_CONN_CLOSE_SERVER.to_owned(),
-            conn.lr.my_id.clone(),
-        );
-        video_service::notify_video_frame_fetched(id, None);
-        scrap::codec::Encoder::update(id, scrap::codec::EncodingUpdate::Remove);
-        if conn.authorized {
-            password::update_temporary_password();
-        }
-        if let Err(err) = conn.try_port_forward_loop(&mut rx_from_cm).await {
-            conn.on_close(&err.to_string(), false).await;
-        }
-
-        conn.post_conn_audit(json!({
-            "action": "close",
-        }));
-        if let Some(s) = conn.server.upgrade() {
-            let mut s = s.write().unwrap();
-            s.remove_connection(&conn.inner);
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            try_stop_record_cursor_pos();
-        }
-        conn.on_close("End", true).await;
-        log::info!("#{} connection loop exited", id);
-    }
-
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    fn handle_input(receiver: std_mpsc::Receiver<MessageInput>, tx: Sender) {
-        let mut block_input_mode = false;
-        #[cfg(target_os = "windows")]
-        {
-            rdev::set_dw_mouse_extra_info(enigo::ENIGO_INPUT_EXTRA_VALUE);
-            rdev::set_dw_keyboard_extra_info(enigo::ENIGO_INPUT_EXTRA_VALUE);
-        }
-        #[cfg(target_os = "macos")]
-        reset_input_ondisconn();
-        loop {
-            match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
-                Ok(v) => match v {
-                    MessageInput::Mouse((msg, id)) => {
-                        handle_mouse(&msg, id);
-                    }
-                    MessageInput::Key((mut msg, press)) => {
-                        // todo: press and down have similar meanings.
-                        if press && msg.mode.enum_value() == Ok(KeyboardMode::Legacy) {
-                            msg.down = true;
-                        }
-                        handle_key(&msg);
-                        if press && msg.mode.enum_value() == Ok(KeyboardMode::Legacy) {
-                            msg.down = false;
-                            handle_key(&msg);
-                        }
-                    }
-                    MessageInput::Pointer((msg, id)) => {
-                        handle_pointer(&msg, id);
-                    }
-                    MessageInput::BlockOn => {
-                        if crate::platform::block_input(true) {
-                            block_input_mode = true;
-                        } else {
-                            Self::send_block_input_error(
-                                &tx,
-                                back_notification::BlockInputState::BlkOnFailed,
-                            );
-                        }
-                    }
-                    MessageInput::BlockOff => {
-                        if crate::platform::block_input(false) {
-                            block_input_mode = false;
-                        } else {
-                            Self::send_block_input_error(
-                                &tx,
-                                back_notification::BlockInputState::BlkOffFailed,
-                            );
-                        }
-                    }
-                    #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
-                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                    MessageInput::BlockOnPlugin(_peer) => {
-                        if crate::platform::block_input(true) {
-                            block_input_mode = true;
-                        }
-                        let _r = PLUGIN_BLOCK_INPUT_TX_RX
-                            .0
-                            .lock()
-                            .unwrap()
-                            .send(block_input_mode);
-                    }
-                    #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
-                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                    MessageInput::BlockOffPlugin(_peer) => {
-                        if crate::platform::block_input(false) {
-                            block_input_mode = false;
-                        }
-                        let _r = PLUGIN_BLOCK_INPUT_TX_RX
-                            .0
-                            .lock()
-                            .unwrap()
-                            .send(block_input_mode);
-                    }
-                },
-                Err(err) => {
-                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                    if block_input_mode {
-                        let _ = crate::platform::block_input(true);
-                    }
-                    if std_mpsc::RecvTimeoutError::Disconnected == err {
-                        break;
-                    }
-                }
-            }
-        }
-        #[cfg(target_os = "linux")]
-        clear_remapped_keycode();
-        log::info!("Input thread exited");
     }
 
     async fn try_port_forward_loop(
@@ -1756,118 +1313,7 @@ impl Connection {
                     }
                 }
                 Some(message::Union::FileAction(fa)) => {
-                    if self.file_transfer.is_some() {
-                        match fa.union {
-                            Some(file_action::Union::ReadDir(rd)) => {
-                                self.read_dir(&rd.path, rd.include_hidden);
-                            }
-                            Some(file_action::Union::AllFiles(f)) => {
-                                match fs::get_recursive_files(&f.path, f.include_hidden) {
-                                    Err(err) => {
-                                        self.send(fs::new_error(f.id, err, -1)).await;
-                                    }
-                                    Ok(files) => {
-                                        self.send(fs::new_dir(f.id, f.path, files)).await;
-                                    }
-                                }
-                            }
-                            Some(file_action::Union::Send(s)) => {
-                                let id = s.id;
-                                let od = can_enable_overwrite_detection(get_version_number(
-                                    &self.lr.version,
-                                ));
-                                let path = s.path.clone();
-                                match fs::TransferJob::new_read(
-                                    id,
-                                    "".to_string(),
-                                    path.clone(),
-                                    s.file_num,
-                                    s.include_hidden,
-                                    false,
-                                    od,
-                                ) {
-                                    Err(err) => {
-                                        self.send(fs::new_error(id, err, 0)).await;
-                                    }
-                                    Ok(job) => {
-                                        self.send(fs::new_dir(id, path, job.files().to_vec()))
-                                            .await;
-                                        let mut files = job.files().to_owned();
-                                        self.read_jobs.push(job);
-                                        self.file_timer = time::interval(MILLI1);
-                                        self.post_file_audit(
-                                            FileAuditType::RemoteSend,
-                                            &s.path,
-                                            files
-                                                .drain(..)
-                                                .map(|f| (f.name, f.size as _))
-                                                .collect(),
-                                            json!({}),
-                                        );
-                                    }
-                                }
-                            }
-                            Some(file_action::Union::Receive(r)) => {
-                                // note: 1.1.10 introduced identical file detection, which breaks original logic of send/recv files
-                                // whenever got send/recv request, check peer version to ensure old version of rustdesk
-                                let od = can_enable_overwrite_detection(get_version_number(
-                                    &self.lr.version,
-                                ));
-                                self.send_fs(ipc::FS::NewWrite {
-                                    path: r.path.clone(),
-                                    id: r.id,
-                                    file_num: r.file_num,
-                                    files: r
-                                        .files
-                                        .to_vec()
-                                        .drain(..)
-                                        .map(|f| (f.name, f.modified_time))
-                                        .collect(),
-                                    overwrite_detection: od,
-                                });
-                                self.post_file_audit(
-                                    FileAuditType::RemoteReceive,
-                                    &r.path,
-                                    r.files
-                                        .to_vec()
-                                        .drain(..)
-                                        .map(|f| (f.name, f.size as _))
-                                        .collect(),
-                                    json!({}),
-                                );
-                            }
-                            Some(file_action::Union::RemoveDir(d)) => {
-                                self.send_fs(ipc::FS::RemoveDir {
-                                    path: d.path,
-                                    id: d.id,
-                                    recursive: d.recursive,
-                                });
-                            }
-                            Some(file_action::Union::RemoveFile(f)) => {
-                                self.send_fs(ipc::FS::RemoveFile {
-                                    path: f.path,
-                                    id: f.id,
-                                    file_num: f.file_num,
-                                });
-                            }
-                            Some(file_action::Union::Create(c)) => {
-                                self.send_fs(ipc::FS::CreateDir {
-                                    path: c.path,
-                                    id: c.id,
-                                });
-                            }
-                            Some(file_action::Union::Cancel(c)) => {
-                                self.send_fs(ipc::FS::CancelWrite { id: c.id });
-                                fs::remove_job(c.id, &mut self.read_jobs);
-                            }
-                            Some(file_action::Union::SendConfirm(r)) => {
-                                if let Some(job) = fs::get_job(r.id, &mut self.read_jobs) {
-                                    job.confirm(&r);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                    log::info!("message: File Action");
                 }
                 Some(message::Union::FileResponse(fr)) => match fr.union {
                     Some(file_response::Union::Block(block)) => {
@@ -2640,7 +2086,7 @@ impl Default for PortableState {
     }
 }
 
-impl Drop for Connection {
+impl Drop for BotConnection {
     fn drop(&mut self) {
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         self.release_pressed_modifiers();

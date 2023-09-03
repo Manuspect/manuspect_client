@@ -6,6 +6,8 @@ use std::{
 };
 
 use bytes::Bytes;
+mod bot_connection;
+mod scenario;
 
 pub use connection::*;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -192,7 +194,13 @@ pub async fn create_tcp_connection(
             .ok();
         log::info!("wake up macos");
     }
-    Connection::start(addr, stream, id, Arc::downgrade(&server)).await;
+    connection::start_stream(
+        StreamType::Stream { addr, stream },
+        id,
+        Arc::downgrade(&server),
+    )
+    .await;
+
     Ok(())
 }
 

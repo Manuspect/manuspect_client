@@ -726,5 +726,21 @@ message Message {
     VoiceCallResponse voice_call_response = 24;
     PeerInfo peer_info = 25;
     PointerDeviceEvent pointer_device_event = 26;
+    ProcessingRequest processing_request = 27;
   }
+}
+
+message ProcessingRequest {
+  string username = 1;
+  bytes password = 2;
+  string my_id = 4;
+  string my_name = 5;
+  OptionMessage option = 6;
+  oneof union {
+    FileTransfer file_transfer = 7;
+    PortForward port_forward = 8;
+  }
+  bool video_ack_required = 9;
+  uint64 session_id = 10;
+  string version = 11;
 }
