@@ -1,4 +1,4 @@
-use super::{input_service::*, *};
+use super::{event_tracer::*, input_service::*, *};
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use crate::clipboard_file::*;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -127,7 +127,7 @@ pub struct ConnInner {
     tx_video: Option<Sender>,
 }
 
-enum MessageInput {
+pub enum MessageInput {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     Mouse((MouseEvent, i32)),
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -298,6 +298,10 @@ impl Connection {
         let (tx_to_cm, rx_to_cm) = mpsc::unbounded_channel::<ipc::Data>();
         let (tx, mut rx) = mpsc::unbounded_channel::<(Instant, Arc<Message>)>();
         let (tx_video, mut rx_video) = mpsc::unbounded_channel::<(Instant, Arc<Message>)>();
+
+        let (tx_events, mut rx_events) = mpsc::unbounded_channel::<MessageInput>();
+        let (tx_frames, mut rx_frames) = mpsc::unbounded_channel::<Arc<Message>>();
+
         let (tx_input, _rx_input) = std_mpsc::channel();
         let mut hbbs_rx = crate::hbbs_http::sync::signal_receiver();
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -423,8 +427,13 @@ impl Connection {
             },
         );
 
+
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        std::thread::spawn(move || Self::handle_input(_rx_input, tx_cloned));
+        std::thread::spawn(move || Self::handle_input(_rx_input, tx_cloned, tx_events));
+
+
+        event_tracer::trace(rx_frames, rx_events);
+        
         let mut second_timer = time::interval(Duration::from_secs(1));
 
         loop {
@@ -611,7 +620,9 @@ impl Connection {
                     if !conn.video_ack_required {
                         video_service::notify_video_frame_fetched(id, Some(instant.into()));
                     }
+                        tx_frames.send(value.clone());
                     if let Err(err) = conn.stream.send(&value as &Message).await {
+
                         conn.on_close(&err.to_string(), false).await;
                         break;
                     }
@@ -718,7 +729,11 @@ impl Connection {
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    fn handle_input(receiver: std_mpsc::Receiver<MessageInput>, tx: Sender) {
+    fn handle_input(
+        receiver: std_mpsc::Receiver<MessageInput>,
+        tx: Sender,
+        tx_events: mpsc::UnboundedSender<MessageInput>,
+    ) {
         let mut block_input_mode = false;
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         {
@@ -731,6 +746,8 @@ impl Connection {
             match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
                 Ok(v) => match v {
                     MessageInput::Mouse((msg, id)) => {
+                        println!("Send event");
+                        tx_events.send(MessageInput::Mouse((msg.clone(), id)));
                         handle_mouse(&msg, id);
                     }
                     MessageInput::Key((mut msg, press)) => {
@@ -738,6 +755,7 @@ impl Connection {
                         if press && msg.mode.enum_value() == Ok(KeyboardMode::Legacy) {
                             msg.down = true;
                         }
+                        tx_events.send(MessageInput::Key((msg.clone(), press)));
                         handle_key(&msg);
                         if press && msg.mode.enum_value() == Ok(KeyboardMode::Legacy) {
                             msg.down = false;
@@ -1752,6 +1770,7 @@ impl Connection {
                         log::debug!("call_main_service_pointer_input fail:{}", e);
                     }
                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                    //println!("Mouse event {}", me);
                     if self.peer_keyboard_enabled() {
                         if is_left_up(&me) {
                             CLICK_TIME.store(get_time(), Ordering::SeqCst);

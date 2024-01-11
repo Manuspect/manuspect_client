@@ -31,6 +31,7 @@ use service::{EmptyExtraFieldService, GenericService, Service, Subscriber};
 use crate::ipc::Data;
 
 pub mod audio_service;
+pub mod event_tracer;
 cfg_if::cfg_if! {
 if #[cfg(not(any(target_os = "android", target_os = "ios")))] {
 mod clipboard_service;
