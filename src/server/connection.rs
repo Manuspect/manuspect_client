@@ -1,4 +1,6 @@
-use super::{event_tracer::*, input_service::*, *};
+#[cfg(any(feature = "event_tracer"))]
+use super::event_tracer::*;
+use super::{input_service::*, *};
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use crate::clipboard_file::*;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -427,13 +429,12 @@ impl Connection {
             },
         );
 
-
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         std::thread::spawn(move || Self::handle_input(_rx_input, tx_cloned, tx_events));
 
-
+        #[cfg(any(feature = "event_tracer"))]
         event_tracer::trace(rx_frames, rx_events);
-        
+
         let mut second_timer = time::interval(Duration::from_secs(1));
 
         loop {
@@ -620,7 +621,10 @@ impl Connection {
                     if !conn.video_ack_required {
                         video_service::notify_video_frame_fetched(id, Some(instant.into()));
                     }
-                        tx_frames.send(value.clone());
+
+                    #[cfg(any(feature = "event_tracer"))]
+                    tx_frames.send(value.clone());
+
                     if let Err(err) = conn.stream.send(&value as &Message).await {
 
                         conn.on_close(&err.to_string(), false).await;
@@ -746,7 +750,7 @@ impl Connection {
             match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
                 Ok(v) => match v {
                     MessageInput::Mouse((msg, id)) => {
-                        println!("Send event");
+                        #[cfg(any(feature = "event_tracer"))]
                         tx_events.send(MessageInput::Mouse((msg.clone(), id)));
                         handle_mouse(&msg, id);
                     }
@@ -755,6 +759,7 @@ impl Connection {
                         if press && msg.mode.enum_value() == Ok(KeyboardMode::Legacy) {
                             msg.down = true;
                         }
+                        #[cfg(any(feature = "event_tracer"))]
                         tx_events.send(MessageInput::Key((msg.clone(), press)));
                         handle_key(&msg);
                         if press && msg.mode.enum_value() == Ok(KeyboardMode::Legacy) {
