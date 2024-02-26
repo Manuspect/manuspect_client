@@ -9,6 +9,9 @@ use image::{math, ImageBuffer, Rgb};
 use scrap::{codec::Decoder, ImageFormat, ImageRgb};
 use serde::{Serialize, Serializer};
 
+use reqwest::{Client, multipart};
+use std::fs;
+
 #[derive(Serialize)]
 struct EventRecord {
     timestamp: u128,
@@ -48,7 +51,7 @@ async fn save_state(frame: &Arc<Mutex<ImageRgb>>, mouse_pos: &(i32, i32), event_
 
     let json_str = serde_json::to_string(&record).unwrap();
 
-    tokio::fs::create_dir(&dirpath).await;
+    tokio::fs::create_dir_all(&dirpath).await.unwrap();
 
     let json_path = format!("{}data.json", &dirpath);
 
@@ -65,7 +68,46 @@ async fn save_state(frame: &Arc<Mutex<ImageRgb>>, mouse_pos: &(i32, i32), event_
         frame.w as u32,
         frame.h as u32,
         image::ColorType::Rgba8,
-    );
+    ).unwrap();
+
+    send_frame(&dirpath).await;
+}
+
+async fn send_frame(dir_path: &String) {
+    let url = "http://95.165.88.39:9000/process";
+
+    let file_name = "frame.png";
+    let file_path = format!("{}{}", &dir_path, &file_name);
+    let file_fs = fs::read(file_path).unwrap();
+
+    let part = multipart::Part::bytes(file_fs).file_name(file_name);
+    let form = reqwest::multipart::Form::new()
+        .text("user_id", "123")
+        .text("session_id", "321")
+        .part("screenshot", part);
+
+    let content_type =  format!("multipart/form-data; boundary=\"{}\"", form.boundary());
+
+    let client = Client::new();
+    let response = client
+        .post(url)
+        .header("Content-Type", content_type)
+        .header("User-Agent", "reqwest")
+        .multipart(form)
+        .send()
+        .await;
+
+    // debug:
+    match response {
+        Ok(response) => {
+            println!("{:?}", response);
+            print!("{}", response.text().await.unwrap());
+
+        }
+        Err(e) => {
+            println!("{:?}", e);
+        }  
+    }
 }
 
 async fn handle_event(
