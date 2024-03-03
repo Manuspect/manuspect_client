@@ -234,6 +234,7 @@ pub enum Data {
 
 #[tokio::main(flavor = "current_thread")]
 pub async fn start(postfix: &str) -> ResultType<()> {
+    log::info!("start({})", postfix);
     let mut incoming = new_listener(postfix).await?;
     loop {
         if let Some(result) = incoming.next().await {
@@ -266,6 +267,7 @@ pub async fn start(postfix: &str) -> ResultType<()> {
 
 pub async fn new_listener(postfix: &str) -> ResultType<Incoming> {
     let path = Config::ipc_path(postfix);
+    log::info!("new_listener(): {}", path);
     #[cfg(not(any(windows, target_os = "android", target_os = "ios")))]
     check_pid(postfix).await;
     let mut endpoint = Endpoint::new(path.clone());
@@ -506,6 +508,7 @@ async fn handle(data: Data, stream: &mut Connection) {
 
 pub async fn connect(ms_timeout: u64, postfix: &str) -> ResultType<ConnectionTmpl<ConnClient>> {
     let path = Config::ipc_path(postfix);
+    log::info!("connect() path: {}", path);
     let client = timeout(ms_timeout, Endpoint::connect(&path)).await??;
     Ok(ConnectionTmpl::new(client))
 }
@@ -513,6 +516,7 @@ pub async fn connect(ms_timeout: u64, postfix: &str) -> ResultType<ConnectionTmp
 #[cfg(target_os = "linux")]
 #[tokio::main(flavor = "current_thread")]
 pub async fn start_pa() {
+    log::info!("start_pa");
     use crate::audio_service::AUDIO_DATA_SIZE_U8;
 
     match new_listener("_pa").await {

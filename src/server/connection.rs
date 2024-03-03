@@ -2962,6 +2962,7 @@ async fn start_ipc(
     mut _rx_desktop_ready: mpsc::Receiver<()>,
     tx_stream_ready: mpsc::Sender<()>,
 ) -> ResultType<()> {
+    log::info!("start_ipc");
     use hbb_common::anyhow::anyhow;
 
     loop {

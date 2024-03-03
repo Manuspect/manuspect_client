@@ -72,6 +72,7 @@ lazy_static::lazy_static! {
 #[cfg(not(windows))]
 #[no_mangle]
 pub extern "C" fn rustdesk_core_main() -> bool {
+    println!("rustdesk_core_main");
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     if crate::core_main::core_main().is_some() {
         return true;
@@ -91,6 +92,7 @@ pub extern "C" fn handle_applicationShouldOpenUntitledFile() {
 #[cfg(windows)]
 #[no_mangle]
 pub extern "C" fn rustdesk_core_main_args(args_len: *mut c_int) -> *mut *mut c_char {
+    println!("rustdesk_core_main_args");
     unsafe { std::ptr::write(args_len, 0) };
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
@@ -472,6 +474,7 @@ impl FlutterHandler {
     /// * `name` - The name of the event.
     /// * `event` - Fields of the event content.
     pub fn push_event(&self, name: &str, event: Vec<(&str, &str)>) {
+        println("push_event({}, {:?})", name, event);
         let mut h: HashMap<&str, &str> = event.iter().cloned().collect();
         debug_assert!(h.get("name").is_none());
         h.insert("name", name);
@@ -1122,6 +1125,7 @@ pub mod connection_manager {
     impl InvokeUiCM for FlutterHandler {
         //TODO port_forward
         fn add_connection(&self, client: &crate::ui_cm_interface::Client) {
+            println!("add_connection()");
             let client_json = serde_json::to_string(&client).unwrap_or("".into());
             // send to Android service, active notification no matter UI is shown or not.
             #[cfg(any(target_os = "android"))]
@@ -1172,6 +1176,7 @@ pub mod connection_manager {
 
     impl FlutterHandler {
         fn push_event(&self, name: &str, event: Vec<(&str, &str)>) {
+            println!("server side push_event()");
             let mut h: HashMap<&str, &str> = event.iter().cloned().collect();
             debug_assert!(h.get("name").is_none());
             h.insert("name", name);
@@ -1202,6 +1207,7 @@ pub mod connection_manager {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     fn start_listen_ipc(new_thread: bool) {
+        println!("start_listen_ipc()");
         use crate::ui_cm_interface::{start_ipc, ConnectionManager};
 
         #[cfg(target_os = "linux")]

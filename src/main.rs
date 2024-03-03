@@ -7,6 +7,7 @@ use librustdesk::*;
 
 #[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
 fn main() {
+    println!("main: feature = flutter");
     if !common::global_init() {
         return;
     }
@@ -24,6 +25,7 @@ fn main() {
     feature = "flutter"
 )))]
 fn main() {
+    println!("main: feature != flutter");
     if !common::global_init() {
         return;
     }
@@ -39,6 +41,7 @@ fn main() {
 
 #[cfg(feature = "cli")]
 fn main() {
+    println!("main: feature = cli");
     if !common::global_init() {
         return;
     }

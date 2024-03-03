@@ -37,6 +37,7 @@ fn is_empty_uni_link(arg: &str) -> bool {
 /// If it returns [`Some`], then the process will continue, and flutter gui will be started.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn core_main() -> Option<Vec<String>> {
+    println!("core_main");
     #[cfg(windows)]
     crate::platform::windows::bootstrap();
     let mut args = Vec::new();
@@ -161,6 +162,7 @@ pub fn core_main() -> Option<Vec<String>> {
     init_plugins(&args);
     log::info!("main start args:{:?}", args);
     if args.is_empty() || is_empty_uni_link(&args[0]) {
+        println!("start server 165");
         std::thread::spawn(move || crate::start_server(false));
     } else {
         #[cfg(windows)]
@@ -273,11 +275,13 @@ pub fn core_main() -> Option<Vec<String>> {
             crate::privacy_mode::restore_reg_connectivity();
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             {
+                println!("start server 278");
                 crate::start_server(true);
                 return None;
             }
             #[cfg(target_os = "macos")]
             {
+                println!("start server 284");
                 let handler = std::thread::spawn(move || crate::start_server(true));
                 crate::tray::start_tray();
                 // prevent server exit when encountering errors from tray
@@ -456,6 +460,7 @@ pub fn core_main() -> Option<Vec<String>> {
             }
         }
     }
+    println!("end of core_main");
     //_async_logger_holder.map(|x| x.flush());
     #[cfg(feature = "flutter")]
     return Some(flutter_args);
@@ -467,6 +472,7 @@ pub fn core_main() -> Option<Vec<String>> {
 #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn init_plugins(args: &Vec<String>) {
+    println!("init_plugins");
     if args.is_empty() || "--server" == (&args[0] as &str) {
         #[cfg(debug_assertions)]
         let load_plugins = true;
@@ -481,6 +487,7 @@ fn init_plugins(args: &Vec<String>) {
 }
 
 fn import_config(path: &str) {
+    println!("import_config");
     use hbb_common::{config::*, get_exe_time, get_modified_time};
     let path2 = path.replace(".toml", "2.toml");
     let path2 = std::path::Path::new(&path2);
@@ -514,6 +521,7 @@ fn import_config(path: &str) {
 /// If it returns [`Some`], then the process will continue, and flutter gui will be started.
 #[cfg(feature = "flutter")]
 fn core_main_invoke_new_connection(mut args: std::env::Args) -> Option<Vec<String>> {
+    println!("core_main_invoke_new_connection");
     let mut authority = None;
     let mut id = None;
     let mut param_array = vec![];
@@ -584,6 +592,7 @@ fn core_main_invoke_new_connection(mut args: std::env::Args) -> Option<Vec<Strin
 
 #[cfg(all(target_os = "linux", feature = "flutter"))]
 fn try_send_by_dbus(uni_links: String) -> Option<Vec<String>> {
+    println!("try_send_by_dbus");
     use crate::dbus::invoke_new_connection;
 
     match invoke_new_connection(uni_links) {
@@ -600,6 +609,7 @@ fn try_send_by_dbus(uni_links: String) -> Option<Vec<String>> {
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn is_root() -> bool {
+    println!("is_root");
     #[cfg(windows)]
     {
         return crate::platform::is_elevated(None).unwrap_or_default()

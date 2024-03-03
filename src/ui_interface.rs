@@ -950,6 +950,7 @@ pub fn new_remote(id: String, remote_type: String, force_relay: bool) {
 #[inline]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn start_option_status_sync() {
+    log::info!("start_option_status_sync()");
     let _sender = SENDER.lock().unwrap();
 }
 

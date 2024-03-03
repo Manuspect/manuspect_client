@@ -458,6 +458,7 @@ pub fn get_active_userid() -> String {
 }
 
 fn get_cm() -> bool {
+    log::info!("get_cm");
     if let Ok(output) = Command::new("ps").args(vec!["aux"]).output() {
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             if line.contains(&format!(
@@ -580,6 +581,7 @@ where
     K: AsRef<OsStr>,
     V: AsRef<OsStr>,
 {
+    println!("run_as_user: {:?}, user {:?}", arg, user);
     let (uid, username) = match user {
         Some(id_name) => id_name,
         None => get_active_user_id_name(),

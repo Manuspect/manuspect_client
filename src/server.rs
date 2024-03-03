@@ -427,6 +427,7 @@ pub async fn start_server(_is_server: bool) {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tokio::main]
 pub async fn start_server(is_server: bool) {
+    println!("start_server({})", is_server);
     #[cfg(target_os = "linux")]
     {
         log::info!("DISPLAY={:?}", std::env::var("DISPLAY"));
@@ -483,6 +484,7 @@ pub async fn start_server(is_server: bool) {
             }
         }
     }
+    println!("end of start_server()");
 }
 
 #[cfg(target_os = "macos")]

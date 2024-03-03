@@ -12,6 +12,7 @@ bool flutter_rustdesk_core_main() {
      fprintf(stderr,"load librustdesk.so failed\n");
      return true;
    }
+   fprintf(stderr, "C: flutter_rustdesk_core_main");
    auto core_main = (RustDeskCoreMain) dlsym(librustdesk,"rustdesk_core_main");
    char* error;
    if ((error = dlerror()) != nullptr) {
