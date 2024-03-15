@@ -7,10 +7,43 @@ use super::{clipboard_service::new, *};
 use hbb_common::tokio::{sync::mpsc, sync::Mutex};
 use image::{math, ImageBuffer, Rgb};
 use scrap::{codec::Decoder, ImageFormat, ImageRgb};
-use serde::{Serialize, Serializer};
+use serde::{Serialize, Serializer, Deserialize};
 
-use reqwest::{Client, multipart};
+use reqwest::{multipart, Body, Client};
 use std::fs;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct ElementsSimilarityElements {
+    bbox: Vec<i32>,
+    class_id: i32,
+    id: i32,
+    text: Option<String>
+}
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct ElementsSimilarityBBoxes {
+    class_id: i32,
+    xc: f32,
+    yc: f32,
+    w: f32,
+    h: f32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct ElementsSimilarityRequest {
+    session_id: String,
+    screen_id: Option<String>,
+    results: Vec<ElementsSimilarityElements>,
+    bboxes: Vec<ElementsSimilarityBBoxes>
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct ElementsSimilarityResponse{
+    session_id: String,
+    screen_id: Option<String>,
+    results: Vec<ElementsSimilarityElements>,
+    bboxes: Vec<ElementsSimilarityBBoxes>
+}
+
 
 #[derive(Serialize)]
 struct EventRecord {
@@ -70,11 +103,45 @@ async fn save_state(frame: &Arc<Mutex<ImageRgb>>, mouse_pos: &(i32, i32), event_
         image::ColorType::Rgba8,
     ).unwrap();
 
-    send_frame(&dirpath).await;
+    let to_send = send_frame(&dirpath).await;
+    if let Some(to_send) = to_send {
+        resend_element_similarity(to_send).await;
+    } else {
+        println!("Nothing got from  ui_tracking")
+    }
 }
 
-async fn send_frame(dir_path: &String) {
-    let url = "http://95.165.88.39:9000/process";
+async fn resend_element_similarity(to_send: String) {
+    // TODO: change host
+    let url = "http://95.165.88.39:9000/element_similarity";
+
+
+    let client = Client::new();
+    let response = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", "reqwest")
+        .body(Body::from(to_send))
+        .send()
+        .await;
+
+     // debug:
+     match response {
+        Ok(response) => {
+            println!("{:?}", response);
+            let text_response = response.text().await.unwrap();
+            print!("{}", text_response);
+
+        }
+        Err(e) => {
+            println!("{:?}", e);
+        }  
+    }
+}
+
+async fn send_frame(dir_path: &String) -> Option<String> {
+    // TODO: change host
+    let url = "http://95.165.88.39:9000/element_similarity";
 
     let file_name = "frame.png";
     let file_path = format!("{}{}", &dir_path, &file_name);
@@ -82,7 +149,7 @@ async fn send_frame(dir_path: &String) {
 
     let part = multipart::Part::bytes(file_fs).file_name(file_name);
     let form = reqwest::multipart::Form::new()
-        .text("user_id", "123")
+        .text("parent_id", "123")
         .text("session_id", "321")
         .part("screenshot", part);
 
@@ -101,11 +168,14 @@ async fn send_frame(dir_path: &String) {
     match response {
         Ok(response) => {
             println!("{:?}", response);
-            print!("{}", response.text().await.unwrap());
+            let text_response = response.text().await.unwrap();
+            print!("{}", text_response);
+            return Some(text_response);
 
         }
         Err(e) => {
             println!("{:?}", e);
+            return None;
         }  
     }
 }
