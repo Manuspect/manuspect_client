@@ -747,11 +747,14 @@ impl Connection {
         #[cfg(target_os = "macos")]
         reset_input_ondisconn();
         loop {
-            match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
+            match receiver.recv_timeout(std::time::Duration::from_millis(100)) {
                 Ok(v) => match v {
                     MessageInput::Mouse((msg, id)) => {
+                        println!("got mouse event in connection");
                         #[cfg(any(feature = "event_tracer"))]
                         tx_events.send(MessageInput::Mouse((msg.clone(), id)));
+                        // TODO: fix, handle mouse should live with event_tracer
+                        #[cfg(not(feature = "event_tracer"))]
                         handle_mouse(&msg, id);
                     }
                     MessageInput::Key((mut msg, press)) => {

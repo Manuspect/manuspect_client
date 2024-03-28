@@ -5032,6 +5032,7 @@ dependencies = [
  "libc",
  "log",
  "mio",
+ "serde 1.0.190",
  "strum 0.24.1",
  "strum_macros 0.24.3",
  "widestring",

@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:auto_size_text/auto_size_text.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/consts.dart';
+import 'package:flutter_hbb/models/model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:get/get.dart';
 import 'package:url_launcher/url_launcher_string.dart';
@@ -151,6 +152,28 @@ class _ConnectionPageState extends State<ConnectionPage>
     connect(context, id, isFileTransfer: isFileTransfer);
   }
 
+  void onEventLoggerStart() async {
+    var id = _idController.id;
+    var _ffi = FFI(null);
+    Get.put(_ffi, tag: id);
+    _ffi.ffiModel.waitForFirstImage = false.obs;
+    // _ffi.imageModel.addCallbackOnFirstImage((String peerId) {
+    //   showKBLayoutTypeChooserIfNeeded(
+    //       _ffi.ffiModel.pi.platform, _ffi.dialogManager);
+    // });
+    String password = gFFI.serverModel.serverPasswd.text;
+    debugPrint("EventLogger try connect to id: $id with password $password");
+    _ffi.start(
+      id,
+      password: password,
+    );
+    await bind.startEventLogger(
+      id: id,
+      sessionId: _ffi.sessionId,
+    );
+    // connect(context, id, isFileTransfer: false);
+  }
+
   Future<void> _fetchPeers() async {
     setState(() {
       isPeersLoading = true;
@@ -167,7 +190,7 @@ class _ConnectionPageState extends State<ConnectionPage>
   /// Search for a peer.
   Widget _buildRemoteIDTextField(BuildContext context) {
     var w = Container(
-      width: 320 + 20 * 2,
+      width: 420 + 20 * 2,
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 22),
       decoration: BoxDecoration(
           borderRadius: const BorderRadius.all(Radius.circular(13)),
@@ -380,15 +403,19 @@ class _ConnectionPageState extends State<ConnectionPage>
                     width: 17,
                   ),
                   Button(onTap: onConnect, text: "Connect"),
+                  const SizedBox(
+                    width: 17,
+                  ),
+                  Button(onTap: onEventLoggerStart, text: "Start Event logger"),
                 ],
               ),
-            )
+            ),
           ],
         ),
       ),
     );
     return Container(
-        constraints: const BoxConstraints(maxWidth: 600), child: w);
+        constraints: const BoxConstraints(maxWidth: 1200), child: w);
   }
 
   Widget buildStatus() {

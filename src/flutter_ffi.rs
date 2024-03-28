@@ -2078,3 +2078,15 @@ pub mod server_side {
         crate::server::video_service::refresh()
     }
 }
+
+pub fn start_event_logger(id: String, session_id: uuid::Uuid) -> bool {
+    println!("start event logger");
+    use crate::event_tracer::client;
+    client::start(session_id);
+    return true;
+}
+
+// for sync?
+// pub fn start_event_logger(id: String) -> SyncReturn<bool> {
+//     println!("start event logger")
+// }
