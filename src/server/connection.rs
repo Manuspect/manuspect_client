@@ -764,7 +764,10 @@ impl Connection {
                         }
                         #[cfg(any(feature = "event_tracer"))]
                         tx_events.send(MessageInput::Key((msg.clone(), press)));
+
+                        #[cfg(not(feature = "event_tracer"))]
                         handle_key(&msg);
+                        #[cfg(not(feature = "event_tracer"))]
                         if press && msg.mode.enum_value() == Ok(KeyboardMode::Legacy) {
                             msg.down = false;
                             handle_key(&msg);
@@ -795,7 +798,7 @@ impl Connection {
                                 back_notification::BlockInputState::BlkOffFailed,
                                 msg,
                             );
-                        }
+                        }       
                     }
                     #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -806,7 +809,7 @@ impl Connection {
                         }
                         let _r = PLUGIN_BLOCK_INPUT_TX_RX
                             .0
-                            .lock()
+                            .lock() 
                             .unwrap()
                             .send(block_input_mode);
                     }

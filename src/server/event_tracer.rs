@@ -1,16 +1,17 @@
 use std::{
-    fmt::{self}, time::{SystemTime, UNIX_EPOCH}
+    fmt::{self},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use std::fmt::Display;
 
 use winapi::um::{
     processthreadsapi::OpenProcess,
-    psapi:: GetProcessImageFileNameW,
+    psapi::GetProcessImageFileNameW,
     winnt::PROCESS_ALL_ACCESS,
     winuser::{
-        GetForegroundWindow, GetWindowRect, GetWindowTextW,
-        GetWindowThreadProcessId, RealGetWindowClassW,
+        GetForegroundWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
+        RealGetWindowClassW,
     },
 };
 
@@ -19,7 +20,7 @@ use crate::input::*;
 use super::*;
 use hbb_common::tokio::{sync::mpsc, sync::Mutex};
 use scrap::{codec::Decoder, ImageFormat, ImageRgb};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use reqwest::{multipart, Body, Client};
 use std::fs;
@@ -29,7 +30,7 @@ struct ElementsSimilarityElements {
     bbox: Vec<i32>,
     class_id: i32,
     id: i32,
-    text: Option<String>
+    text: Option<String>,
 }
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct ElementsSimilarityBBoxes {
@@ -45,17 +46,16 @@ struct ElementsSimilarityRequest {
     session_id: String,
     screen_id: Option<String>,
     results: Vec<ElementsSimilarityElements>,
-    bboxes: Vec<ElementsSimilarityBBoxes>
+    bboxes: Vec<ElementsSimilarityBBoxes>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-struct ElementsSimilarityResponse{
+struct ElementsSimilarityResponse {
     session_id: String,
     screen_id: Option<String>,
     results: Vec<ElementsSimilarityElements>,
-    bboxes: Vec<ElementsSimilarityBBoxes>
+    bboxes: Vec<ElementsSimilarityBBoxes>,
 }
-
 
 // #[derive(Serialize)]
 // struct EventRecord {
@@ -78,9 +78,8 @@ struct EventRecord {
     event: String,
     mouse_x_pos: i32,
     mouse_y_pos: i32,
-    modifiers: String
+    modifiers: String,
 }
-
 
 fn decode_frame(decoder: &mut Decoder, frame_rgb: &mut ImageRgb, frame_msg: &Message) {
     match &frame_msg.union {
@@ -97,8 +96,16 @@ fn decode_frame(decoder: &mut Decoder, frame_rgb: &mut ImageRgb, frame_msg: &Mes
     };
 }
 
-async fn save_state(frame: &Arc<Mutex<ImageRgb>>, mouse_pos: &(i32, i32), event_str: &String, modifiers: &String) {
-    println!("save state ({};{}) - {}", mouse_pos.0, mouse_pos.1, event_str);
+async fn save_state(
+    frame: &Arc<Mutex<ImageRgb>>,
+    mouse_pos: &(i32, i32),
+    event_str: &String,
+    modifiers: &String,
+) {
+    println!(
+        "save state ({};{}) - {}",
+        mouse_pos.0, mouse_pos.1, event_str
+    );
     let time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -113,7 +120,7 @@ async fn save_state(frame: &Arc<Mutex<ImageRgb>>, mouse_pos: &(i32, i32), event_
     let process_id = get_process_id(hwnd);
     let class_name = get_class_name(hwnd);
     let process_path = get_process_path(hwnd);
-    let record = EventRecord{
+    let record = EventRecord {
         timestamp: time,
         process_path: process_path,
         title: title,
@@ -125,8 +132,7 @@ async fn save_state(frame: &Arc<Mutex<ImageRgb>>, mouse_pos: &(i32, i32), event_
         event: event_str.to_owned(),
         mouse_x_pos: mouse_pos.0,
         mouse_y_pos: mouse_pos.1,
-        modifiers: modifiers.to_string()
-
+        modifiers: modifiers.to_string(),
     };
 
     // #[cfg(not(target_os="Windows"))]
@@ -150,13 +156,16 @@ async fn save_state(frame: &Arc<Mutex<ImageRgb>>, mouse_pos: &(i32, i32), event_
     let frame_path = format!("{}frame.png", &dirpath);
 
     let mut frame = frame.lock().await;
-    image::save_buffer(
-        frame_path,
-        &frame.raw,
-        frame.w as u32,
-        frame.h as u32,
-        image::ColorType::Rgba8,
-    ).expect("may fail");
+    if frame.w != 0 {
+        image::save_buffer(
+            frame_path,
+            &frame.raw,
+            frame.w as u32,
+            frame.h as u32,
+            image::ColorType::Rgba8,
+        )
+        .expect("may fail");
+    }
 
     // let to_send = send_frame(&dirpath).await;
     // if let Some(to_send) = to_send {
@@ -170,7 +179,6 @@ async fn resend_element_similarity(to_send: String) {
     // TODO: change host
     let url = "http://95.165.88.39:9000/element_similarity";
 
-
     let client = Client::new();
     let response = client
         .post(url)
@@ -180,17 +188,16 @@ async fn resend_element_similarity(to_send: String) {
         .send()
         .await;
 
-     // debug:
-     match response {
+    // debug:
+    match response {
         Ok(response) => {
             println!("{:?}", response);
             let text_response = response.text().await.unwrap();
             print!("{}", text_response);
-
         }
         Err(e) => {
             println!("{:?}", e);
-        }  
+        }
     }
 }
 
@@ -208,7 +215,7 @@ async fn send_frame(dir_path: &String) -> Option<String> {
         .text("session_id", "321")
         .part("screenshot", part);
 
-    let content_type =  format!("multipart/form-data; boundary=\"{}\"", form.boundary());
+    let content_type = format!("multipart/form-data; boundary=\"{}\"", form.boundary());
 
     let client = Client::new();
     let response = client
@@ -226,12 +233,11 @@ async fn send_frame(dir_path: &String) -> Option<String> {
             let text_response = response.text().await.unwrap();
             print!("{}", text_response);
             return Some(text_response);
-
         }
         Err(e) => {
             println!("{:?}", e);
             return None;
-        }  
+        }
     }
 }
 
@@ -245,26 +251,37 @@ async fn handle_event(
         match input {
             MessageInput::Mouse((mouse, id)) => {
                 // if mouse.mask == 0 {
-                    // mouse_pos.0 = mouse.x;
-                    // mouse_pos.1 = mouse.y;
-                    let event = get_mouse_event_from_mask(mouse.mask);
-                    // let modifiers = Vec::new();
-                    // for modifyer in mouse.modifiers {
-                    //     modifiers.append(modifyer.enum_value())
+                // mouse_pos.0 = mouse.x;
+                // mouse_pos.1 = mouse.y;
+                let event = get_mouse_event_from_mask(mouse.mask);
+                // let modifiers = Vec::new();
+                // for modifyer in mouse.modifiers {
+                //     modifiers.append(modifyer.enum_value())
 
-                    // }
+                // }
                 // } else {
-                    save_state(&frame, &(mouse.x, mouse.y), &event.to_string(), &format!("{:?}", mouse.modifiers)).await;
+                save_state(
+                    &frame,
+                    &(mouse.x, mouse.y),
+                    &event.to_string(),
+                    &format!("{:?}", mouse.modifiers),
+                )
+                .await;
                 // }
             }
             MessageInput::Key((key, press)) => {
-                save_state(&frame, &mouse_pos, &key.to_string(), &format!("{:?}", key.modifiers)).await;
+                save_state(
+                    &frame,
+                    &mouse_pos,
+                    &key.to_string(),
+                    &format!("{:?}", key.modifiers),
+                )
+                .await;
             }
             _ => {}
         };
     }
 }
-
 
 pub enum MouseLogEvents {
     LB_DOWN,
@@ -273,21 +290,21 @@ pub enum MouseLogEvents {
     RB_UP,
     MID_DOWN,
     MID_UP,
-    UNDEFINED
+    SCROLL,
+    UNDEFINED,
 }
-
 
 impl fmt::Display for MouseLogEvents {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-
         let to_write = match self {
-            MouseLogEvents::LB_DOWN =>  "LB_DOWN",
-            MouseLogEvents::LB_UP =>      "LB_UP",
-            MouseLogEvents::RB_DOWN =>  "RB_DOWN",
-            MouseLogEvents::RB_UP =>      "RB_UP",
-            MouseLogEvents::MID_DOWN =>"MID_DOWN",
-            MouseLogEvents::MID_UP =>    "MID_UP",
-            MouseLogEvents::UNDEFINED => "UNDEFINED"
+            MouseLogEvents::LB_DOWN => "LB_DOWN",
+            MouseLogEvents::LB_UP => "LB_UP",
+            MouseLogEvents::RB_DOWN => "RB_DOWN",
+            MouseLogEvents::RB_UP => "RB_UP",
+            MouseLogEvents::MID_DOWN => "MID_DOWN",
+            MouseLogEvents::MID_UP => "MID_UP",
+            MouseLogEvents::SCROLL => "SCROLL",
+            MouseLogEvents::UNDEFINED => "UNDEFINED",
         };
         write!(f, "{:?}", to_write)
         // or, alternatively:
@@ -295,9 +312,7 @@ impl fmt::Display for MouseLogEvents {
     }
 }
 
-
 fn get_mouse_event_from_mask(mask: i32) -> MouseLogEvents {
-    
     type MLE = MouseLogEvents;
 
     let buttons = mask >> 3;
@@ -323,11 +338,11 @@ fn get_mouse_event_from_mask(mask: i32) -> MouseLogEvents {
             // MOUSE_BUTTON_FORWARD => {
             //     allow_err!(en.mouse_down(MouseButton::Forward));
             // }
-            _ => MLE::UNDEFINED
+            _ => MLE::UNDEFINED,
         },
         MOUSE_TYPE_UP => match buttons {
-            MOUSE_BUTTON_LEFT =>   MLE::LB_UP,
-            MOUSE_BUTTON_RIGHT =>  MLE::RB_UP,
+            MOUSE_BUTTON_LEFT => MLE::LB_UP,
+            MOUSE_BUTTON_RIGHT => MLE::RB_UP,
             MOUSE_BUTTON_WHEEL => MLE::MID_UP,
 
             // MOUSE_BUTTON_BACK => {
@@ -336,65 +351,13 @@ fn get_mouse_event_from_mask(mask: i32) -> MouseLogEvents {
             // MOUSE_BUTTON_FORWARD => {
             //     en.mouse_up(MouseButton::Forward);
             // }
-            _ => MLE::UNDEFINED
+            _ => MLE::UNDEFINED,
         },
-        // MOUSE_TYPE_WHEEL | MOUSE_TYPE_TRACKPAD => {
-        //     #[allow(unused_mut)]
-        //     let mut x = evt.x;
-        //     #[allow(unused_mut)]
-        //     let mut y = evt.y;
-        //     #[cfg(not(windows))]
-        //     {
-        //         x = -x;
-        //         y = -y;
-        //     }
+        MOUSE_TYPE_WHEEL | MOUSE_TYPE_TRACKPAD => MLE::SCROLL,
 
-        //     #[cfg(any(target_os = "macos", target_os = "windows"))]
-        //     let is_track_pad = evt_type == MOUSE_TYPE_TRACKPAD;
-
-        //     #[cfg(target_os = "macos")]
-        //     {
-        //         // TODO: support track pad on win.
-
-        //         // fix shift + scroll(down/up)
-        //         if !is_track_pad
-        //             && evt
-        //                 .modifiers
-        //                 .contains(&EnumOrUnknown::new(ControlKey::Shift))
-        //         {
-        //             x = y;
-        //             y = 0;
-        //         }
-
-        //         if x != 0 {
-        //             en.mouse_scroll_x(x, is_track_pad);
-        //         }
-        //         if y != 0 {
-        //             en.mouse_scroll_y(y, is_track_pad);
-        //         }
-        //     }
-
-        //     #[cfg(windows)]
-        //     if !is_track_pad {
-        //         x *= WHEEL_DELTA as i32;
-        //         y *= WHEEL_DELTA as i32;
-        //     }
-
-        //     #[cfg(not(target_os = "macos"))]
-        //     {
-        //         if y != 0 {
-        //             en.mouse_scroll_y(y);
-        //         }
-        //         if x != 0 {
-        //             en.mouse_scroll_x(x);
-        //         }
-        //     }
-        // }
-        
-        _ => MLE::UNDEFINED
+        _ => MLE::UNDEFINED,
     }
 }
-
 
 async fn handle_frame(
     rx_frames: &mut mpsc::UnboundedReceiver<Arc<Message>>,
@@ -441,7 +404,6 @@ pub fn trace(
     });
 }
 
-
 /// Get the handle of the window that has the focus.
 pub fn get_focus_hwnd() -> winapi::shared::windef::HWND {
     unsafe { GetForegroundWindow() }
@@ -453,7 +415,10 @@ pub fn get_title(hwnd: winapi::shared::windef::HWND) -> String {
     unsafe {
         GetWindowTextW(hwnd, name.as_mut_ptr() as *mut u16, 256);
     }
-    String::from_utf16(&name).unwrap().trim_end_matches('\0').to_string()
+    String::from_utf16(&name)
+        .unwrap()
+        .trim_end_matches('\0')
+        .to_string()
 }
 
 /// Get the rectangle of the window.
@@ -469,7 +434,7 @@ pub fn get_rect(hwnd: winapi::shared::windef::HWND) -> RECT {
     }
     RECT(lp_rect)
 }
- 
+
 /// Get the process ID of the window.
 pub fn get_process_id(hwnd: winapi::shared::windef::HWND) -> u32 {
     let mut lpdw_process_id: u32 = 0;
@@ -483,7 +448,10 @@ pub fn get_class_name(hwnd: winapi::shared::windef::HWND) -> String {
     unsafe {
         RealGetWindowClassW(hwnd, ptsz_class_name.as_mut_ptr(), 256);
     }
-    String::from_utf16(&ptsz_class_name).unwrap().trim_end_matches('\0').to_string()
+    String::from_utf16(&ptsz_class_name)
+        .unwrap()
+        .trim_end_matches('\0')
+        .to_string()
 }
 
 /// Get the path of the process.
@@ -495,7 +463,10 @@ pub fn get_process_path(hwnd: winapi::shared::windef::HWND) -> String {
         let mut lpsz_file_name: [u16; 256] = [0; 256];
         GetProcessImageFileNameW(handle, lpsz_file_name.as_mut_ptr() as *mut u16, 256);
 
-        String::from_utf16(&lpsz_file_name).unwrap().trim_end_matches('\0').to_string()
+        String::from_utf16(&lpsz_file_name)
+            .unwrap()
+            .trim_end_matches('\0')
+            .to_string()
     }
 }
 
@@ -519,11 +490,10 @@ pub mod client {
 
     use super::*;
 
-
-// use clap::Parser;
+    // use clap::Parser;
     // use print::println;
     use lazy_static::lazy_static;
-    use rdev::{grab, Button, Event, EventType, Key, listen};
+    use rdev::{grab, listen, Button, Event, EventType, Key};
     // use screenshots::Screen;
     use serde::Serialize;
     // use std::any::Any;
@@ -533,60 +503,53 @@ pub mod client {
     use std::sync::{Arc, Mutex};
     use std::thread::{self, JoinHandle};
 
-// use ::event_logger::EventLogger;
-
+    // use ::event_logger::EventLogger;
 
     lazy_static! {
         static ref KEY_BUFFER: Arc<Mutex<HashSet<Key>>> = Arc::new(Mutex::new(HashSet::new()));
         static ref CURRENT_MOUSE_POS: Arc<Mutex<(f64, f64)>> = Arc::new(Mutex::new((0.0, 0.0)));
         static ref EVENT_LOGGER: Arc<Mutex<Option<JoinHandle<()>>>> = Arc::new(Mutex::new(None));
         static ref SESSION_ID: Arc<Mutex<Option<uuid::Uuid>>> = Arc::new(Mutex::new(None));
-    
     }
 
     pub fn start(session_id: uuid::Uuid) {
+        *SESSION_ID.lock().unwrap() = Some(session_id);
 
-            *SESSION_ID.lock().unwrap() = Some(session_id);
-
-            let event_logger = thread::spawn(|| {
-                if let Err(error) = grab(event_handler) {
-                    println!("Error: {:?}", error)
-                }
-            });
-        
-            // Store the event_logger thread handle
-            *EVENT_LOGGER.lock().unwrap() = Some(event_logger);
-
-            // wait for the event_logger thread to finish
-            if let Some(event_logger) = EVENT_LOGGER.lock().unwrap().take() {
-                event_logger.join().unwrap();
+        let event_logger = thread::spawn(|| {
+            if let Err(error) = grab(event_handler) {
+                println!("Error: {:?}", error)
             }
+        });
 
+        // Store the event_logger thread handle
+        *EVENT_LOGGER.lock().unwrap() = Some(event_logger);
 
+        // wait for the event_logger thread to finish
+        if let Some(event_logger) = EVENT_LOGGER.lock().unwrap().take() {
+            event_logger.join().unwrap();
+        }
     }
 
     fn stop_log() {
         println!("Stopping the event logger");
-
     }
-                                                                    
-    fn event_listener(event: Event) { 
+
+    fn event_listener(event: Event) {
         event_handler(event);
     }
 
-    fn mouse_send(mouse_event: MouseEvent){
-
+    fn mouse_send(mouse_event: MouseEvent) {
         let mut mask = mouse_event.mouse_type;
-        
+
         // mask = match &mouse_event.mouse_type {
         //     "down" => MOUSE_TYPE_DOWN,
         //     "up" => MOUSE_TYPE_UP,
         //     "wheel" => MOUSE_TYPE_WHEEL,
+
         //     "trackpad" => MOUSE_TYPE_TRACKPAD,
         //     _ => 0,
         // };
-        
-       
+
         mask |= match mouse_event.button {
             Button::Left => MOUSE_BUTTON_LEFT,
             Button::Right => MOUSE_BUTTON_RIGHT,
@@ -595,7 +558,7 @@ pub mod client {
             // "forward" => MOUSE_BUTTON_FORWARD,
             _ => 0,
         } << 3;
-        
+
         let alt = mouse_event.modifiers.contains(&Key::Alt);
         let ctrl = mouse_event.modifiers.contains(&Key::ControlLeft);
         let shift = mouse_event.modifiers.contains(&Key::ShiftLeft);
@@ -603,17 +566,46 @@ pub mod client {
 
         let session_id = SESSION_ID.lock().unwrap().unwrap();
         if let Some(session) = sessions::get_session_by_session_id(&session_id) {
-            session.send_mouse(mask, mouse_event.x as i32, mouse_event.y as i32, alt, ctrl, shift, command);
+            session.send_mouse(
+                mask,
+                mouse_event.x as i32,
+                mouse_event.y as i32,
+                alt,
+                ctrl,
+                shift,
+                command,
+            );
+        }
+    }
+
+    fn key_send(key_event: KeyLogEvent) {
+        let alt = key_event.modifiers.contains(&Key::Alt);
+        let ctrl = key_event.modifiers.contains(&Key::ControlLeft);
+        let shift = key_event.modifiers.contains(&Key::ShiftLeft);
+        let command = key_event.modifiers.contains(&Key::MetaLeft);
+
+        let name = format!("{:?}", key_event.button);
+
+        let session_id = SESSION_ID.lock().unwrap().unwrap();
+        if let Some(session) = sessions::get_session_by_session_id(&session_id) {
+            session.input_key(
+                &name,
+                key_event.down,
+                key_event.down,
+                alt,
+                ctrl,
+                shift,
+                command,
+            );
         }
     }
 
     fn event_handler(event: Event) -> Option<Event> {
-
         match event.event_type {
-            EventType::MouseMove { x: m_x, y: m_y } => {
+            EventType::MouseMove { x, y } => {
                 let ref mut current_pos = *CURRENT_MOUSE_POS.lock().unwrap();
-                current_pos.0 = m_x;
-                current_pos.1 = m_y;
+                current_pos.0 = x;
+                current_pos.1 = y;
                 Some(event)
             }
 
@@ -628,15 +620,14 @@ pub mod client {
                     modifiers: modifiers.clone(),
                     mouse_type: MOUSE_TYPE_DOWN,
                 };
-                
+
                 let json = serde_json::to_string(&mouse_event).unwrap();
                 mouse_send(mouse_event);
-                println!("saved json: {}", json);
-                
+                // println!("saved json: {}", json);
 
                 Some(event)
             }
-                                        
+
             EventType::ButtonRelease(button) => {
                 let ref mut current_pos = *CURRENT_MOUSE_POS.lock().unwrap();
 
@@ -646,40 +637,62 @@ pub mod client {
                     y: current_pos.1.clone(),
                     button,
                     modifiers: modifiers.clone(),
-                    mouse_type: MOUSE_TYPE_UP
+                    mouse_type: MOUSE_TYPE_UP,
                 };
                 let json = serde_json::to_string(&mouse_event).unwrap();
                 mouse_send(mouse_event);
-            
-                println!("saved json: {}", json);
+
+                // println!("saved json: {}", json);
 
                 Some(event)
             }
 
             EventType::KeyPress(key) => {
-                println!("Key pressed: {:?}", key);
+                // println!("Key pressed: {:?}", key);
                 let mut buffer = KEY_BUFFER.lock().unwrap();
                 buffer.insert(key);
 
-                if key == Key::AltGr {
-                    println!("Stopping the event logger");
-                    stop_log()
-                }
+                // if key == Key::AltGr {
+                //     println!("Stopping the event logger");
+                //     stop_log()
+                // }
+
+                let key_event = KeyLogEvent {
+                    button: key,
+                    modifiers: buffer.clone(),
+                    down: true,
+                };
+                key_send(key_event);
                 Some(event)
             }
             EventType::KeyRelease(key) => {
-                println!("Key released: {:?}", key);
+                // println!("Key released: {:?}", key);
                 let mut buffer = KEY_BUFFER.lock().unwrap();
+
+                let key_event = KeyLogEvent {
+                    button: key,
+                    modifiers: buffer.clone(),
+                    down: false,
+                };
+                key_send(key_event);
+
                 buffer.remove(&key);
                 Some(event)
             }
-            EventType::Wheel {
-                delta_x: _,
-                delta_y: _,
-            } => {
-                let json = serde_json::to_string(&event).unwrap();
-                println!("saved json: {}", json);
-            
+            EventType::Wheel { delta_x, delta_y } => {
+                let ref mut modifiers = *KEY_BUFFER.lock().unwrap();
+                let mouse_event = MouseEvent {
+                    x: delta_x as f64,
+                    y: delta_y as f64,
+                    button: Button::Middle,
+                    modifiers: modifiers.clone(),
+                    mouse_type: MOUSE_TYPE_WHEEL,
+                };
+                let json = serde_json::to_string(&mouse_event).unwrap();
+                mouse_send(mouse_event);
+
+                // println!("saved json: {}", json);
+
                 Some(event)
             }
         }
@@ -691,6 +704,13 @@ pub mod client {
         button: Button,
         modifiers: HashSet<Key>,
         // TODO Enum
-        mouse_type: i32
-    } 
-} 
+        mouse_type: i32,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    struct KeyLogEvent {
+        button: Key,
+        modifiers: HashSet<Key>,
+        down: bool,
+    }
+}
