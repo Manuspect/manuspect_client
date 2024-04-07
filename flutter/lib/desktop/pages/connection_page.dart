@@ -54,6 +54,9 @@ class _ConnectionPageState extends State<ConnectionPage>
 
   bool isPeersLoading = false;
   bool isPeersLoaded = false;
+  RxBool eventLoggerWorks = false.obs;
+
+  FFI loggerFFI = FFI(null);
 
   @override
   void initState() {
@@ -153,25 +156,33 @@ class _ConnectionPageState extends State<ConnectionPage>
   }
 
   void onEventLoggerStart() async {
-    var id = _idController.id;
-    var _ffi = FFI(null);
-    Get.put(_ffi, tag: id);
-    _ffi.ffiModel.waitForFirstImage = false.obs;
-    // _ffi.imageModel.addCallbackOnFirstImage((String peerId) {
-    //   showKBLayoutTypeChooserIfNeeded(
-    //       _ffi.ffiModel.pi.platform, _ffi.dialogManager);
-    // });
-    String password = gFFI.serverModel.serverPasswd.text;
-    debugPrint("EventLogger try connect to id: $id with password $password");
-    _ffi.start(
-      id,
-      password: password,
-    );
-    await bind.startEventLogger(
-      id: id,
-      sessionId: _ffi.sessionId,
-    );
-    // connect(context, id, isFileTransfer: false);
+    eventLoggerWorks.value = !eventLoggerWorks.value;
+    if (eventLoggerWorks.isTrue) {
+      String id = gFFI.serverModel.serverId.text.numericOnly();
+      debugPrint(id);
+      String password = gFFI.serverModel.serverPasswd.text;
+
+      Get.put(loggerFFI, tag: id);
+      loggerFFI.ffiModel.waitForFirstImage = false.obs;
+      // _ffi.imageModel.addCallbackOnFirstImage((String peerId) {
+      //   showKBLayoutTypeChooserIfNeeded(
+      //       _ffi.ffiModel.pi.platform, _ffi.dialogManager);
+      // });
+      debugPrint("EventLogger try connect to id: $id with password $password");
+      loggerFFI.start(
+        id,
+        password: password,
+      );
+      await bind.startEventLogger(
+        id: id,
+        sessionId: loggerFFI.sessionId,
+      );
+      // connect(context, id, isFileTransfer: false);
+    } else {
+      await bind.stopEventLogger();
+      await Future.delayed(Duration(milliseconds: 500));
+      await bind.sessionClose(sessionId: loggerFFI.sessionId);
+    }
   }
 
   Future<void> _fetchPeers() async {
@@ -406,7 +417,16 @@ class _ConnectionPageState extends State<ConnectionPage>
                   const SizedBox(
                     width: 17,
                   ),
-                  Button(onTap: onEventLoggerStart, text: "Start Event logger"),
+                  Obx(
+                    () => Button(
+                      onTap: onEventLoggerStart,
+                      text: eventLoggerWorks.isTrue
+                          ? "Stop Event logger"
+                          : "Start Event logger",
+                      textColor:
+                          eventLoggerWorks.isTrue ? Colors.white : Colors.red,
+                    ),
+                  )
                 ],
               ),
             ),

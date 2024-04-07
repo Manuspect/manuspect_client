@@ -433,7 +433,8 @@ impl Connection {
         std::thread::spawn(move || Self::handle_input(_rx_input, tx_cloned, tx_events));
 
         #[cfg(any(feature = "event_tracer"))]
-        event_tracer::trace(rx_frames, rx_events);
+        event_tracer::trace(rx_frames, rx_events, conn.lr.session_id);
+        conn.audio = false;
 
         let mut second_timer = time::interval(Duration::from_secs(1));
 
@@ -774,6 +775,7 @@ impl Connection {
                         }
                     }
                     MessageInput::Pointer((msg, id)) => {
+                        #[cfg(not(feature = "event_tracer"))]
                         handle_pointer(&msg, id);
                     }
                     MessageInput::BlockOn => {

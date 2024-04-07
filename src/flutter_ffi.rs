@@ -2080,9 +2080,14 @@ pub mod server_side {
 }
 
 pub fn start_event_logger(id: String, session_id: uuid::Uuid) -> bool {
-    println!("start event logger");
     use crate::event_tracer::client;
     client::start(session_id);
+    return true;
+}
+
+pub fn stop_event_logger() -> bool {
+    use crate::event_tracer::client;
+    client::stop_log();
     return true;
 }
 

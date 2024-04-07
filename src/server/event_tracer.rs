@@ -1,10 +1,11 @@
 use std::{
-    fmt::{self},
-    time::{SystemTime, UNIX_EPOCH},
+    fmt,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+use lazy_static::lazy_static;
 use std::fmt::Display;
-
+use uuid::Uuid;
 use winapi::um::{
     processthreadsapi::OpenProcess,
     psapi::GetProcessImageFileNameW,
@@ -16,9 +17,15 @@ use winapi::um::{
 };
 
 use crate::input::*;
+use screenshots::Screen;
 
 use super::*;
-use hbb_common::tokio::{sync::mpsc, sync::Mutex};
+use hbb_common::tokio::{
+    fs::{File, OpenOptions},
+    io::AsyncWriteExt,
+    sync::{mpsc, Mutex},
+};
+
 use scrap::{codec::Decoder, ImageFormat, ImageRgb};
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +88,10 @@ struct EventRecord {
     modifiers: String,
 }
 
+lazy_static! {
+    static ref SCREEN: Screen = Screen::all().unwrap()[0];
+}
+
 fn decode_frame(decoder: &mut Decoder, frame_rgb: &mut ImageRgb, frame_msg: &Message) {
     match &frame_msg.union {
         Some(message::Union::VideoFrame(frame)) => {
@@ -90,7 +101,7 @@ fn decode_frame(decoder: &mut Decoder, frame_rgb: &mut ImageRgb, frame_msg: &Mes
                 &mut std::ptr::null_mut(),
                 &mut true,
                 &mut None,
-            );
+            ).expect("Failed to handle videoframe");
         }
         _ => {}
     };
@@ -101,78 +112,118 @@ async fn save_state(
     mouse_pos: &(i32, i32),
     event_str: &String,
     modifiers: &String,
+    session_id: Uuid,
 ) {
-    println!(
-        "save state ({};{}) - {}",
-        mouse_pos.0, mouse_pos.1, event_str
-    );
-    let time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    let dirpath = format!("/tmp/{}/", time);
+    if mouse_pos.0 == -123 {
+        let temp_dir = std::env::temp_dir();
+        let dirpath = format!(
+            "{}/EventLogger/session-{}/",
+            temp_dir.as_path().to_str().unwrap(),
+            session_id
+        );
+        let json_str = "{}]";
+        let json_path = format!("{}data.json", &dirpath);
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(json_path)
+            .await
+            .expect("failed to open file");
 
-    // #[cfg(target_os="Windows")]
-    // TODO: only windows
-    let hwnd = get_focus_hwnd();
-    let title = get_title(hwnd);
-    let rect = get_rect(hwnd);
-    let process_id = get_process_id(hwnd);
-    let class_name = get_class_name(hwnd);
-    let process_path = get_process_path(hwnd);
-    let record = EventRecord {
-        timestamp: time,
-        process_path: process_path,
-        title: title,
-        class_name: class_name,
-        window_left: rect.0.left,
-        window_top: rect.0.top,
-        window_right: rect.0.right,
-        window_bottom: rect.0.bottom,
-        event: event_str.to_owned(),
-        mouse_x_pos: mouse_pos.0,
-        mouse_y_pos: mouse_pos.1,
-        modifiers: modifiers.to_string(),
-    };
+        file.write_all(json_str.as_bytes())
+            .await
+            .expect("failed to append");
+    } else {
+        println!(
+            "save state ({};{}) - {}",
+            mouse_pos.0, mouse_pos.1, event_str
+        );
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        println!("Time in saving: {}", time);
 
-    // #[cfg(not(target_os="Windows"))]
-    // let record = EventRecord {
-    //     timestamp: time,
-    //     mouse_x_pos: mouse_pos.0,
-    //     mouse_y_pos: mouse_pos.1,
-    //     event: event_str.to_owned(),
-    // };
+        // #[cfg(target_os="Windows")]
+        // TODO: only windows
+        let hwnd = get_focus_hwnd();
+        let title = get_title(hwnd);
+        let rect = get_rect(hwnd);
+        let class_name = get_class_name(hwnd);
+        let process_path = get_process_path(hwnd);
+        let record = EventRecord {
+            timestamp: time,
+            process_path: process_path,
+            title: title,
+            class_name: class_name,
+            window_left: rect.0.left,
+            window_top: rect.0.top,
+            window_right: rect.0.right,
+            window_bottom: rect.0.bottom,
+            event: event_str.to_owned(),
+            mouse_x_pos: mouse_pos.0,
+            mouse_y_pos: mouse_pos.1,
+            modifiers: modifiers.to_string(),
+        };
 
-    let json_str = serde_json::to_string(&record).unwrap();
+        let temp_dir = std::env::temp_dir();
+        let dirpath = format!(
+            "{}/EventLogger/session-{}/",
+            temp_dir.as_path().to_str().unwrap(),
+            session_id
+        );
 
-    tokio::fs::create_dir_all(&dirpath).await.unwrap();
+        let json_str = serde_json::to_string(&record).unwrap() + ",";
+        let json_path = format!("{}data.json", &dirpath);
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(json_path)
+            .await
+            .expect("failed to open file");
 
-    let json_path = format!("{}data.json", &dirpath);
+        file.write_all(json_str.as_bytes())
+            .await
+            .expect("failed to append");
 
-    if let Err(err) = tokio::fs::write(json_path, &json_str).await {
-        eprintln!("Error writing to file: {}", err);
+        let frame_path = format!("{}{}.png", &dirpath, time);
+
+        let now = Instant::now();
+        let image = SCREEN.capture().unwrap();
+        if !event_str.contains("down") {
+            tokio::task::spawn(
+                async move{
+                    image.save(frame_path).expect("Failed to image to file");
+                }
+            );
+        }
+        let elapsed = now.elapsed();
+
+        // let frame_clone = frame.clone();        
+        // if !event_str.contains("down") {
+        //     tokio::task::spawn(
+        //         async move {
+        //             let binding = frame_clone.clone();
+        //             let frame = binding.lock().await;
+        //             if frame.w != 0 {
+        //                 image::save_buffer(
+        //                     frame_path,
+        //                     &frame.raw,
+        //                     frame.w as u32,
+        //                     frame.h as u32,
+        //                     image::ColorType::Rgba8,
+        //                 )
+        //                 .expect("may fail");
+        //             }
+        //         }
+        //     );
+        // }
+        println!("Time to save frame in save_state: {:?}", elapsed);
+        // let to_send = send_frame(&dirpath).await;
+        // if let Some(to_send) = to_send {
+        //     resend_element_similarity(to_send).await;
+        // } else {
+        //     println!("Nothing got from  ui_tracking")
+        // }
     }
-
-    let frame_path = format!("{}frame.png", &dirpath);
-
-    let mut frame = frame.lock().await;
-    if frame.w != 0 {
-        image::save_buffer(
-            frame_path,
-            &frame.raw,
-            frame.w as u32,
-            frame.h as u32,
-            image::ColorType::Rgba8,
-        )
-        .expect("may fail");
-    }
-
-    // let to_send = send_frame(&dirpath).await;
-    // if let Some(to_send) = to_send {
-    //     resend_element_similarity(to_send).await;
-    // } else {
-    //     println!("Nothing got from  ui_tracking")
-    // }
 }
 
 async fn resend_element_similarity(to_send: String) {
@@ -245,6 +296,7 @@ async fn handle_event(
     rx_events: &mut mpsc::UnboundedReceiver<MessageInput>,
     frame: &Arc<Mutex<ImageRgb>>,
     mouse_pos: &mut (i32, i32),
+    session_id: Uuid,
 ) {
     if let Some(input) = rx_events.recv().await {
         println!("got event on server side");
@@ -265,16 +317,19 @@ async fn handle_event(
                     &(mouse.x, mouse.y),
                     &event.to_string(),
                     &format!("{:?}", mouse.modifiers),
+                    session_id,
                 )
                 .await;
                 // }
             }
             MessageInput::Key((key, press)) => {
+                // if key.special_fields
                 save_state(
                     &frame,
                     &mouse_pos,
                     &key.to_string(),
                     &format!("{:?}", key.modifiers),
+                    session_id,
                 )
                 .await;
             }
@@ -370,15 +425,39 @@ async fn handle_frame(
     }
 }
 
+async fn create_new_session(session_id: Uuid) {
+    let temp_dir = std::env::temp_dir();
+    let dirpath = format!(
+        "{}/EventLogger/session-{}/",
+        temp_dir.as_path().to_str().unwrap(),
+        session_id
+    );
+    tokio::fs::create_dir_all(&dirpath).await.unwrap();
+    let json_path = format!("{}data.json", &dirpath);
+    let json_str = "[";
+    if let Err(err) = tokio::fs::write(json_path, &json_str).await {
+        eprintln!("Error writing to file: {}", err);
+    }
+}
+
 pub fn trace(
     mut rx_frames: mpsc::UnboundedReceiver<Arc<Message>>,
     mut rx_events: mpsc::UnboundedReceiver<MessageInput>,
+    session_id: u64,
 ) {
     #[cfg(all(feature = "gpucodec", feature = "flutter"))]
     let luid = crate::flutter::get_adapter_luid();
     #[cfg(not(all(feature = "gpucodec", feature = "flutter")))]
     let luid = Default::default();
     log::info!("Starting tracing");
+
+    let session_uuid = uuid::Uuid::new_v4();
+
+    tokio::spawn({
+        async move {
+            create_new_session(session_uuid).await;
+        }
+    });
 
     let mut decoder = Decoder::new(luid);
     let rgb = ImageRgb::new(ImageFormat::ARGB, crate::DST_STRIDE_RGBA);
@@ -390,7 +469,7 @@ pub fn trace(
         let rgb_common = rgb_common.clone();
         async move {
             loop {
-                handle_event(&mut rx_events, &rgb_common, &mut mouse_pos).await;
+                handle_event(&mut rx_events, &rgb_common, &mut mouse_pos, session_uuid).await;
             }
         }
     });
@@ -511,13 +590,17 @@ pub mod client {
         static ref CURRENT_MOUSE_POS: Arc<Mutex<(f64, f64)>> = Arc::new(Mutex::new((0.0, 0.0)));
         static ref EVENT_LOGGER: Arc<Mutex<Option<JoinHandle<()>>>> = Arc::new(Mutex::new(None));
         static ref SESSION_ID: Arc<Mutex<Option<uuid::Uuid>>> = Arc::new(Mutex::new(None));
+        static ref IS_WORKING: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
     }
 
     pub fn start(session_id: uuid::Uuid) {
         *SESSION_ID.lock().unwrap() = Some(session_id);
+        *IS_WORKING.lock().unwrap() = true;
+
+        // TODO: send start event to server
 
         let event_logger = thread::spawn(|| {
-            if let Err(error) = grab(event_handler) {
+            if let Err(error) = listen(event_listener) {
                 println!("Error: {:?}", error)
             }
         });
@@ -531,8 +614,20 @@ pub mod client {
         }
     }
 
-    fn stop_log() {
+    pub fn stop_log() {
         println!("Stopping the event logger");
+        let session_id = SESSION_ID.lock().unwrap().unwrap();
+        if let Some(session) = sessions::get_session_by_session_id(&session_id) {
+            session.send_mouse(
+                0,
+                -123,
+                0,
+                false,
+                false,
+                false,
+                false,
+            );
+        }
     }
 
     fn event_listener(event: Event) {
@@ -564,6 +659,12 @@ pub mod client {
         let ctrl = mouse_event.modifiers.contains(&Key::ControlLeft);
         let shift = mouse_event.modifiers.contains(&Key::ShiftLeft);
         let command = mouse_event.modifiers.contains(&Key::MetaLeft);
+
+        let time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+        println!("Time sending mouse: {}", time);
 
         let session_id = SESSION_ID.lock().unwrap().unwrap();
         if let Some(session) = sessions::get_session_by_session_id(&session_id) {
@@ -602,7 +703,7 @@ pub mod client {
         }
     }
 
-    fn convert_key_name(key_event_name: Key ) -> &'static str {
+    fn convert_key_name(key_event_name: Key) -> &'static str {
         match key_event_name {
             Key::Alt => "VK_MENU",
             Key::AltGr => "RAlt",
@@ -613,20 +714,20 @@ pub mod client {
             Key::Delete => "VK_DELETE",
             Key::End => "VK_END",
             Key::Escape => "VK_ESCAPE",
-            Key::F1 =>  "VK_F1",
-            Key::F2 =>  "VK_F2",
-            Key::F3 =>  "VK_F3",
-            Key::F4 =>  "VK_F4",
-            Key::F5 =>  "VK_F5",
-            Key::F6 =>  "VK_F6",
-            Key::F7 =>  "VK_F7",
-            Key::F8 =>  "VK_F8",
-            Key::F9 =>  "VK_F9",
+            Key::F1 => "VK_F1",
+            Key::F2 => "VK_F2",
+            Key::F3 => "VK_F3",
+            Key::F4 => "VK_F4",
+            Key::F5 => "VK_F5",
+            Key::F6 => "VK_F6",
+            Key::F7 => "VK_F7",
+            Key::F8 => "VK_F8",
+            Key::F9 => "VK_F9",
             Key::F10 => "VK_F10",
             Key::F11 => "VK_F11",
             Key::F12 => "VK_F12",
-           
-            Key::Home =>"VK_HOME",
+
+            Key::Home => "VK_HOME",
             Key::MetaLeft => "Meta",
             Key::MetaRight => "RWin",
             Key::PageDown => "VK_NEXT",
@@ -636,10 +737,10 @@ pub mod client {
             Key::ShiftRight => "RShift",
             Key::Space => "VK_SPACE",
             Key::Tab => "VK_TAB",
-            Key::LeftArrow =>  "VK_LEFT",
-            Key::UpArrow =>    "VK_UP",
+            Key::LeftArrow => "VK_LEFT",
+            Key::UpArrow => "VK_UP",
             Key::RightArrow => "VK_RIGHT",
-            Key::DownArrow =>  "VK_DOWN",
+            Key::DownArrow => "VK_DOWN",
             Key::PrintScreen => "VK_SNAPSHOT",
 
             Key::Num1 => "VK_1",
@@ -688,8 +789,8 @@ pub mod client {
             Key::Comma => ",",
             Key::Dot => ".",
             Key::Slash => "/",
-            Key::Insert =>"VK_INSERT",
-            Key::KpReturn =>"VK_ENTER",
+            Key::Insert => "VK_INSERT",
+            Key::KpReturn => "VK_ENTER",
             Key::KpMinus => "VK_SUBTRACT",
             Key::KpPlus => "VK_ADD",
             Key::KpMultiply => "VK_MULTIPLY",
@@ -757,6 +858,11 @@ pub mod client {
     }
 
     fn event_handler(event: Event) -> Option<Event> {
+        // The only way to stop this event logger - panic
+        if !(*IS_WORKING.lock().unwrap()) {
+            return None;
+        };
+
         match event.event_type {
             EventType::MouseMove { x, y } => {
                 let ref mut current_pos = *CURRENT_MOUSE_POS.lock().unwrap();
@@ -777,8 +883,9 @@ pub mod client {
                     mouse_type: MOUSE_TYPE_DOWN,
                 };
 
-                let json = serde_json::to_string(&mouse_event).unwrap();
                 mouse_send(mouse_event);
+
+                // let json = serde_json::to_string(&mouse_event).unwrap();
                 // println!("saved json: {}", json);
 
                 Some(event)
@@ -795,9 +902,9 @@ pub mod client {
                     modifiers: modifiers.clone(),
                     mouse_type: MOUSE_TYPE_UP,
                 };
-                let json = serde_json::to_string(&mouse_event).unwrap();
                 mouse_send(mouse_event);
 
+                // let json = serde_json::to_string(&mouse_event).unwrap();
                 // println!("saved json: {}", json);
 
                 Some(event)
@@ -807,11 +914,6 @@ pub mod client {
                 // println!("Key pressed: {:?}", key);
                 let mut buffer = KEY_BUFFER.lock().unwrap();
                 buffer.insert(key);
-
-                // if key == Key::AltGr {
-                //     println!("Stopping the event logger");
-                //     stop_log()
-                // }
 
                 let key_event = KeyLogEvent {
                     button: key,
