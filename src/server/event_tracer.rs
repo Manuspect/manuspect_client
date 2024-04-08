@@ -90,6 +90,7 @@ struct EventRecord {
 
 lazy_static! {
     static ref SCREEN: Screen = Screen::all().unwrap()[0];
+    static ref STOP_SERVER_LOGGER: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
 }
 
 fn decode_frame(decoder: &mut Decoder, frame_rgb: &mut ImageRgb, frame_msg: &Message) {
@@ -115,6 +116,7 @@ async fn save_state(
     session_id: Uuid,
 ) {
     if mouse_pos.0 == -123 {
+        *STOP_SERVER_LOGGER.lock().await = true;
         let temp_dir = std::env::temp_dir();
         let dirpath = format!(
             "{}/EventLogger/session-{}/",
@@ -469,6 +471,7 @@ pub fn trace(
         let rgb_common = rgb_common.clone();
         async move {
             loop {
+                if *STOP_SERVER_LOGGER.lock().await { break;}
                 handle_event(&mut rx_events, &rgb_common, &mut mouse_pos, session_uuid).await;
             }
         }
@@ -477,6 +480,7 @@ pub fn trace(
     tokio::spawn({
         async move {
             loop {
+                if *STOP_SERVER_LOGGER.lock().await { break;}
                 handle_frame(&mut rx_frames, &mut decoder, &rgb_common).await;
             }
         }
@@ -573,7 +577,7 @@ pub mod client {
     // use clap::Parser;
     // use print::println;
     use lazy_static::lazy_static;
-    use rdev::{grab, listen, Button, Event, EventType, Key};
+    use rdev::{grab, listen, Button, Event, EventType, Key, unhook};
     // use screenshots::Screen;
     use serde::Serialize;
     // use std::any::Any;
@@ -598,9 +602,10 @@ pub mod client {
         *IS_WORKING.lock().unwrap() = true;
 
         // TODO: send start event to server
-
+        println!("parent thread pid: {}", std::process::id());
         let event_logger = thread::spawn(|| {
-            if let Err(error) = listen(event_listener) {
+            println!("child thread pid: {}", std::process::id());
+            if let Err(error) = listen( event_listener ) {
                 println!("Error: {:?}", error)
             }
         });
@@ -610,12 +615,17 @@ pub mod client {
 
         // wait for the event_logger thread to finish
         if let Some(event_logger) = EVENT_LOGGER.lock().unwrap().take() {
-            event_logger.join().unwrap();
-        }
+            match event_logger.join(){
+                Ok(_) => {},
+                Err(_) => println!("panic"),
+            }
+        } 
     }
 
     pub fn stop_log() {
         println!("Stopping the event logger");
+        
+        *IS_WORKING.lock().unwrap() = false;
         let session_id = SESSION_ID.lock().unwrap().unwrap();
         if let Some(session) = sessions::get_session_by_session_id(&session_id) {
             session.send_mouse(
@@ -858,11 +868,15 @@ pub mod client {
     }
 
     fn event_handler(event: Event) -> Option<Event> {
-        // The only way to stop this event logger - panic
+        
         if !(*IS_WORKING.lock().unwrap()) {
+            println!("calling unhook");
+            let res = unhook();
+            println!("unhook res = {:?}", res);
+            // panic!("panic");
             return None;
         };
-
+        
         match event.event_type {
             EventType::MouseMove { x, y } => {
                 let ref mut current_pos = *CURRENT_MOUSE_POS.lock().unwrap();
@@ -946,7 +960,7 @@ pub mod client {
                     modifiers: modifiers.clone(),
                     mouse_type: MOUSE_TYPE_WHEEL,
                 };
-                let json = serde_json::to_string(&mouse_event).unwrap();
+                // let json = serde_json::to_string(&mouse_event).unwrap();
                 mouse_send(mouse_event);
 
                 // println!("saved json: {}", json);
@@ -955,7 +969,7 @@ pub mod client {
             }
         }
     }
-    #[derive(Clone, Debug, Serialize)]
+    #[derive(Clone, Debug)]
     struct MouseEvent {
         x: f64,
         y: f64,
@@ -965,7 +979,7 @@ pub mod client {
         mouse_type: i32,
     }
 
-    #[derive(Clone, Debug, Serialize)]
+    #[derive(Clone, Debug)]
     struct KeyLogEvent {
         button: Key,
         modifiers: HashSet<Key>,
