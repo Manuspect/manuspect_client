@@ -1,17 +1,12 @@
 use crate::{
-    client::file_trait::FileManager,
-    common::is_keyboard_mode_supported,
-    common::make_fd_to_json,
-    flutter::{self, session_add, session_add_existed, session_start_, sessions},
-    input::*,
-    ui_interface::{self, *},
+    client::file_trait::FileManager, common::{is_keyboard_mode_supported, make_fd_to_json}, event_tracer::{set_stream_sink, ElementsSimilarityResponse}, flutter::{self, session_add, session_add_existed, session_start_, sessions}, input::*, ui_interface::{self, *}
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::{
     common::get_default_sound_input,
     keyboard::input_source::{change_input_source, get_cur_session_input_source},
 };
-use flutter_rust_bridge::{StreamSink, SyncReturn};
+use flutter_rust_bridge::{StreamSink, SyncReturn, };
 #[cfg(feature = "plugin_framework")]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use hbb_common::allow_err;
@@ -2092,6 +2087,11 @@ pub fn stop_event_logger() -> bool {
     #[cfg(feature="event_tracer")]
     client::stop_log();
     return true;
+}
+
+use crate::event_tracer;
+pub async fn init_bboxes_stream(stream: StreamSink<String> ) {
+    set_stream_sink(stream).await;
 }
 
 // for sync?

@@ -1,6 +1,5 @@
 use std::{
-    fmt,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    error::Error, fmt, time::{Instant, SystemTime, UNIX_EPOCH}
 };
 
 use lazy_static::lazy_static;
@@ -57,13 +56,13 @@ struct ElementsSimilarityRequest {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-struct ElementsSimilarityResponse {
+pub struct ElementsSimilarityResponse {
     session_id: String,
     screen_id: Option<String>,
     results: Vec<ElementsSimilarityElements>,
     bboxes: Vec<ElementsSimilarityBBoxes>,
 }
-
+use flutter_rust_bridge::{StreamSink};
 // #[derive(Serialize)]
 // struct EventRecord {
 //     timestamp: u128,
@@ -91,6 +90,11 @@ struct EventRecord {
 lazy_static! {
     static ref SCREEN: Screen = Screen::all().unwrap()[0];
     static ref STOP_SERVER_LOGGER: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    static ref BBOXES_STREAM: Arc<Mutex<Option<StreamSink<String>>>> = Arc::new(Mutex::new(None));
+}
+
+pub async fn set_stream_sink(stream: StreamSink<String>) {
+    *BBOXES_STREAM.lock().await = Some(stream);
 }
 
 fn decode_frame(decoder: &mut Decoder, frame_rgb: &mut ImageRgb, frame_msg: &Message) {
@@ -219,17 +223,28 @@ async fn save_state(
         //     );
         // }
         println!("Time to save frame in save_state: {:?}", elapsed);
+        tokio::task::spawn(
+            async move{
+                let to_send = send_frame(&dirpath, &time.to_string()).await;
+                if let Some(to_send) = to_send {
+                    let result = resend_element_similarity(to_send).await;
+                    if let Ok(result) = result {
+                        // let response: ElementsSimilarityResponse = serde_json::from_str(&result).unwrap();
+                        let stream = BBOXES_STREAM.lock().await.clone();
+                        stream.unwrap().add(result);
+                        // stream.add(result);
+                    } 
+                } else {
+                    println!("Nothing got from ui_tracking")
+                }
+
+            }
+        );
         // let to_send = send_frame(&dirpath).await;
-        // if let Some(to_send) = to_send {
-        //     resend_element_similarity(to_send).await;
-        // } else {
-        //     println!("Nothing got from  ui_tracking")
-        // }
     }
 }
 
-async fn resend_element_similarity(to_send: String) {
-    // TODO: change host
+async fn resend_element_similarity(to_send: String) -> Result<String, ()> {
     let url = "http://95.165.88.39:9000/element_similarity";
 
     let client = Client::new();
@@ -247,22 +262,22 @@ async fn resend_element_similarity(to_send: String) {
             println!("{:?}", response);
             let text_response = response.text().await.unwrap();
             print!("{}", text_response);
+            Ok(text_response)
         }
         Err(e) => {
             println!("{:?}", e);
+            Err(())
         }
     }
 }
 
-async fn send_frame(dir_path: &String) -> Option<String> {
-    // TODO: change host
-    let url = "http://95.165.88.39:9000/element_similarity";
+async fn send_frame(dir_path: &String, file_name: &String) -> Option<String> {
+    let url = "http://95.165.88.39:9000/screen_similarity";
 
-    let file_name = "frame.png";
-    let file_path = format!("{}{}", &dir_path, &file_name);
+    let file_path = format!("{}{}", &dir_path, &file_name.clone());
     let file_fs = fs::read(file_path).unwrap();
 
-    let part = multipart::Part::bytes(file_fs).file_name(file_name);
+    let part = multipart::Part::bytes(file_fs).file_name(file_name.clone());
     let form = reqwest::multipart::Form::new()
         .text("parent_id", "123")
         .text("session_id", "321")
@@ -461,6 +476,12 @@ pub fn trace(
         }
     });
 
+    tokio::spawn({
+        async move {
+            *STOP_SERVER_LOGGER.lock().await = false;
+        }
+    });
+
     let mut decoder = Decoder::new(luid);
     let rgb = ImageRgb::new(ImageFormat::ARGB, crate::DST_STRIDE_RGBA);
 
@@ -477,14 +498,14 @@ pub fn trace(
         }
     });
 
-    tokio::spawn({
-        async move {
-            loop {
-                if *STOP_SERVER_LOGGER.lock().await { break;}
-                handle_frame(&mut rx_frames, &mut decoder, &rgb_common).await;
-            }
-        }
-    });
+    // tokio::spawn({
+    //     async move {
+    //         loop {
+    //             if *STOP_SERVER_LOGGER.lock().await { break;}
+    //             handle_frame(&mut rx_frames, &mut decoder, &rgb_common).await;
+    //         }
+    //     }
+    // });
 }
 
 /// Get the handle of the window that has the focus.
