@@ -1,5 +1,5 @@
 use crate::{
-    client::file_trait::FileManager, common::{is_keyboard_mode_supported, make_fd_to_json}, event_tracer::{set_stream_sink, ElementsSimilarityResponse}, flutter::{self, session_add, session_add_existed, session_start_, sessions}, input::*, ui_interface::{self, *}
+    client::file_trait::FileManager, common::{is_keyboard_mode_supported, make_fd_to_json}, event_tracer::server::set_stream_sink, flutter::{self, session_add, session_add_existed, session_start_, sessions}, input::*, ui_interface::{self, *}
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::{
@@ -10,12 +10,7 @@ use flutter_rust_bridge::{StreamSink, SyncReturn, };
 #[cfg(feature = "plugin_framework")]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use hbb_common::allow_err;
-use hbb_common::{
-    config::{self, LocalConfig, PeerConfig, PeerInfoSerde},
-    fs, lazy_static, log,
-    message_proto::KeyboardMode,
-    rendezvous_proto::ConnType,
-    ResultType,
+use hbb_common::{config::{self, LocalConfig, PeerConfig, PeerInfoSerde}, fs, lazy_static, log, message_proto::KeyboardMode, rendezvous_proto::ConnType, ResultType
 };
 use std::{
     collections::HashMap,
@@ -2090,8 +2085,9 @@ pub fn stop_event_logger() -> bool {
 }
 
 use crate::event_tracer;
-pub async fn init_bboxes_stream(stream: StreamSink<String> ) {
-    set_stream_sink(stream).await;
+pub fn init_bboxes_stream(stream: StreamSink<String> ) {
+    set_stream_sink(stream);
+
 }
 
 // for sync?
