@@ -2,26 +2,26 @@ pub mod server {
 
     use super::*;
     use std::{
-        fmt,
-        sync::Arc,
-        time::{Instant, SystemTime, UNIX_EPOCH},
+        fmt, fs::File, io::{BufWriter, Cursor, Read, Write}, path::Path, sync::Arc, time::{Instant, SystemTime, UNIX_EPOCH}
     };
 
+    use aes_gcm_siv::{Aes128GcmSiv, Aes256GcmSiv, Key};
     use lazy_static::lazy_static;
+    use rsa::{pkcs1::DecodeRsaPublicKey, pkcs8::DecodePublicKey, RsaPublicKey};
+    use server::crypto::{encrypt_bytes, write_encrypted_bytes};
     use uuid::Uuid;
+    use walkdir::WalkDir;
 
     use crate::{input::*, MessageInput};
     use screenshots::Screen;
 
     use hbb_common::{
-        log,
-        message_proto::{message, Message},
-        tokio::{
+        futures::FutureExt, log, message_proto::{message, Message}, tokio::{
             self,
             fs::OpenOptions,
             io::AsyncWriteExt,
             sync::{mpsc, Mutex},
-        },
+        }
     };
 
     use scrap::{codec::Decoder, ImageFormat, ImageRgb};
@@ -54,15 +54,13 @@ pub mod server {
         static ref BBOXES_STREAM: Arc<Mutex<Option<StreamSink<String>>>> =
             Arc::new(Mutex::new(None));
         static ref BATCH_START_TIME: Arc<Mutex<u128>> = Arc::new(Mutex::new(0));
+        static ref SYM_KEY: Arc<Mutex<Key<Aes256GcmSiv>>> = Arc::new(Mutex::new(crypto::generate_sym_key()));
     }
 
     pub fn set_stream_sink(stream: StreamSink<String>) {
-
-        tokio::task::spawn(
-            async move {
-                *BBOXES_STREAM.lock().await = Some(stream);
-            }
-        );
+        tokio::task::spawn(async move {
+            *BBOXES_STREAM.lock().await = Some(stream);
+        });
     }
 
     fn decode_frame(decoder: &mut Decoder, frame_rgb: &mut ImageRgb, frame_msg: &Message) {
@@ -115,15 +113,14 @@ pub mod server {
         let temp_dir = std::env::temp_dir();
 
         format!(
-            "{}/EventLogger/session-{}/batch-{}/",
+            "{}EventLogger/session-{}/batch-{}/",
             temp_dir.as_path().to_str().unwrap(),
             session_id,
             batch_start_time
         )
     }
-    
-    async fn save_record_to_json(record: EventRecord, dir_path: &String) {
 
+    async fn save_record_to_json(record: EventRecord, dir_path: &String) {
         println!("saving record to json");
 
         let event_str = serde_json::to_string(&record).unwrap();
@@ -134,7 +131,7 @@ pub mod server {
             _ => event_str + ",",
         };
 
-        let json_path = format!("{}data.json", &dir_path);
+        let json_path = format!("{}data.bin", &dir_path);
         let mut file = OpenOptions::new()
             .append(true)
             .create(true)
@@ -145,18 +142,71 @@ pub mod server {
             .await
             .expect("failed to append");
     }
-    
+
     async fn close_json(start_time: u128, end_time: u128, session_id: Uuid) {
         let dirpath = get_dirpath(session_id, start_time);
         let end_record = create_message_event(end_time, "END_OF_BATCH");
         save_record_to_json(end_record, &dirpath).await;
         // then you can add batch id = batch start time to archivator queue
+        // TODO: make it safer, add error handling
+        compress_batch(&dirpath).await;
+        // then delete dir
+        remove_batch(&dirpath).await;
+    }
+    async fn remove_batch(dirpath: &str) {
+        if let Err(err) = fs::remove_dir_all(dirpath) {
+            eprintln!("Error removing directory: {}", err);
+        }
+    }
+    async fn compress_batch(dirpath: &str) {
+        let key = *SYM_KEY.lock().await;
+        println!("sym key: {:?}", key);
+        let dir_path = Path::new(dirpath);
+        let src_dir = dir_path.parent().unwrap();
+        let dst_path = format!("{}.zip", &dirpath[..dirpath.len() - 1]);
+        let path = Path::new(dst_path.as_str());
+        let file = File::create(path).expect("Failed to create new zip");
+        println!("{:?}", file);
+    
+        let mut zip_file: zip::ZipWriter<File> = zip::ZipWriter::new(file);
+        
+        let options = zip::write::FileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .unix_permissions(0o755);
+
+        let walkdir = WalkDir::new(dir_path).min_depth(1);
+        let it = walkdir.into_iter();
+        
+
+        let mut buffer = Vec::new();
+        for entry in &mut it.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let name = path.strip_prefix(dir_path).unwrap();
+            let path_as_string = name
+                .to_str()
+                .map(str::to_owned).expect("failed to parse path");
+    
+            // Write file or directory explicitly
+            // Some unzip tools unzip files with directory paths correctly, some do not!
+            if path.is_file() {
+                println!("adding file {name:?} ...");
+                zip_file.start_file(path_as_string, options).expect("failed to start file");
+                let mut f = File::open(path).expect("failed to open new fle");
+    
+                f.read_to_end(&mut buffer).expect("failed to write to buffer");
+                zip_file.write_all(&buffer).expect("failed to read from buffer to zip");
+                buffer.clear();
+            } else if !name.as_os_str().is_empty() {
+                // Only if not root! Avoids path spec / warning
+                // and mapname conversion failed error on unzip
+                println!("adding dir {name:?} ...");
+                zip_file.add_directory(path_as_string, options).expect("failed to add directory");
+            }
+        }
+        zip_file.finish().expect("failed to finish zip");
     }
 
-    fn create_message_event(
-        time: u128,
-        msg: &str
-    ) -> EventRecord {
+    fn create_message_event(time: u128, msg: &str) -> EventRecord {
         EventRecord {
             timestamp: time,
             process_path: String::new(),
@@ -180,9 +230,9 @@ pub mod server {
         // 2. difference between now and start batch time is more then const (15 min = 900 000 ms)
         // then
         let batch_cooldown: u128 = 30000; // it is 1 min
-        
+
         let batch_start_time = *BATCH_START_TIME.lock().await;
-        
+
         if current_time - batch_start_time > batch_cooldown {
             // if it is not first batch you need to close previous batch
             if batch_start_time != 0 {
@@ -190,14 +240,16 @@ pub mod server {
             }
 
             // create new batch
-            
+
             // 1. update time of current batch
             *BATCH_START_TIME.lock().await = current_time;
-            
+
             // 2. create new batch directory
             let dirpath = get_dirpath(session_id, current_time);
-            tokio::fs::create_dir_all(&dirpath).await.expect("failed to create new dir");
-            
+            tokio::fs::create_dir_all(&dirpath)
+                .await
+                .expect("failed to create new dir");
+
             println!("creating new batch at {}", dirpath);
             // 3. create new json in that directory
             let begin_record = create_message_event(current_time, "BEGIN_OF_BATCH");
@@ -213,38 +265,49 @@ pub mod server {
         session_id: Uuid,
     ) {
         let time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
 
         println!("saving state... at {}", time);
-    
+
         check_and_update_batch(session_id, time).await;
 
-        let current_batch =  *BATCH_START_TIME.lock().await;
+        let current_batch = *BATCH_START_TIME.lock().await;
 
         // -123 is a stop code for now
-        // need something smart
+        // TODO: need something smart
         if mouse_pos.0 == -123 {
             *STOP_SERVER_LOGGER.lock().await = true;
-            close_json(current_batch, time, session_id).await; 
-            *BATCH_START_TIME.lock().await = 0; 
+            close_json(current_batch, time, session_id).await;
+            *BATCH_START_TIME.lock().await = 0;
+       
         } else {
             println!(
                 "save state ({};{}) - {}",
                 mouse_pos.0, mouse_pos.1, event_str
             );
-   
+
             let dirpath = get_dirpath(session_id, current_batch);
             let record = create_windows_event_record(time, mouse_pos, event_str, modifiers);
             save_record_to_json(record, &dirpath).await;
 
-            let frame_path = format!("{}{}.png", &dirpath, time);
+            let frame_path = format!("{}{}.jpeg", &dirpath, time);
 
             if !event_str.contains("down") {
                 tokio::task::spawn(async move {
                     let image = SCREEN.capture().unwrap();
-                    image.save(frame_path).expect("Failed to image to file");
+                    let key = *SYM_KEY.lock().await;
+                    // println!("image size {}", image.write_with_encoder(encoder));
+                    let encoded: Vec<u8> = Vec::new();
+                    let mut cursor = Cursor::new(encoded);
+                    image.write_to(&mut cursor, image::ImageOutputFormat::Png).unwrap();
+                    // encode image with a sym key
+                    let encrypted = encrypt_bytes(cursor.get_ref(), key).expect("Failed to encrypt");
+                    write_encrypted_bytes(&encrypted, &frame_path).expect("Failed to save encrypted file");
+                    // image::codecs::jpeg::JpegEncoder<BufWriter>
+                    // image.write_to(buf_writer.get_mut(), image::ImageOutputFormat::Jpeg(100));
+                    // image.save(frame_path).expect("Failed to image to file");
                     tokio::task::spawn(async move {
                         // send frame to cv model to get bboxes
                         let to_send = send_frame(&dirpath, &time.to_string(), session_id).await;
@@ -260,7 +323,6 @@ pub mod server {
                     });
                 });
             }
-
         }
     }
 
@@ -470,6 +532,11 @@ pub mod server {
             session_id
         );
         tokio::fs::create_dir_all(&dirpath).await.unwrap();
+
+        // only for debug stages
+        let mut key_bin = File::create(format!("{}debug.bin", dirpath)).expect("failed to create debug file");
+        let key = *SYM_KEY.lock().await;
+        key_bin.write_all( &key.to_vec()).expect("failed to write bytes in debug.bin");
     }
 
     pub fn trace(
@@ -607,7 +674,6 @@ pub mod win32api {
                 .to_string()
         }
     }
-
     /// Wrapper struct for the RECT type.
     pub struct RECT(pub winapi::shared::windef::RECT);
 
@@ -621,6 +687,58 @@ pub mod win32api {
                 rect.left, rect.top, rect.right, rect.bottom
             )
         }
+    }
+}
+
+/// Выполняет шифрование переданного текста с использованием публичного ключа RSA.
+///
+/// # Arguments
+/// * `bytes` - Массив байтов, которую нужно зашифровать.
+/// * `public_key` - Публичный ключ RSA, используемый для шифрования.
+///
+/// # Returns
+/// Возвращает `Result`, содержащий зашифрованный массив байтов,
+/// или ошибку `rsa::errors::Error`, если шифрование не удалось.
+pub mod crypto {
+    use aes_gcm_siv::Key;
+    use hbb_common::rand;
+    use rand::rngs::OsRng;
+    use rsa::{Oaep, RsaPublicKey};
+    use sha2::Sha256;
+    use std::fs::OpenOptions;
+    use std::io::{self, Write};
+    use std::result::Result;
+    use aes_gcm_siv::{
+        aead::{Aead, KeyInit},
+        Aes256GcmSiv, Nonce // Or `Aes128GcmSiv`
+    };
+
+    pub fn generate_sym_key() -> Key<Aes256GcmSiv> {
+        let key = Aes256GcmSiv::generate_key(&mut OsRng);
+        key
+    }
+
+    pub fn encrypt_bytes(
+        bytes: &[u8],
+        key: Key<Aes256GcmSiv>
+    ) -> Result<Vec<u8>, aes_gcm_siv::Error> {
+        println!("len of bytes before encoding: {}", bytes.len());
+        let cipher = Aes256GcmSiv::new(&key);
+        let nonce = Nonce::from_slice(b"unique nonce"); 
+        let ciphertext = cipher.encrypt(nonce, bytes)?;
+        println!("len of bytes after encoding: {}", bytes.len());
+        Ok(ciphertext)
+    }
+
+    pub fn write_encrypted_bytes(encrypted_bytes: &[u8], file_path: &str) -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .append(true)
+            .create(true)
+            .open(file_path)?;
+
+        file.write_all(encrypted_bytes)?;
+        Ok(())
     }
 }
 

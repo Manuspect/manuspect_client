@@ -83,8 +83,11 @@ chrono = "0.4"
 cidr-utils = "0.5"
 libloading = "0.8"
 fon = "0.6"
-zip = "0.6"
+zip = {version = "0.6", features = ["bzip2"]}
 shutdown_hooks = "0.1"
+rsa = "0.9.6"
+walkdir = "2.5.0"
+aes-gcm-siv = "0.11.1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "linux")))'.dependencies]
 cpal = "0.15"
@@ -184,6 +187,7 @@ osx_minimum_system_version = "10.14"
 lto = true
 codegen-units = 1
 panic = 'abort'
-strip = true
+strip = false
 #opt-level = 'z' # only have smaller size after strip
 rpath = true
+debug = true
